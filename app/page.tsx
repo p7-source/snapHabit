@@ -1,65 +1,83 @@
-import Image from "next/image";
+"use client"
+
+import { Button } from "@/components/ui/button"
+import Link from "next/link"
+import { Camera, TrendingUp, Sparkles } from "lucide-react"
 
 export default function Home() {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex min-h-screen w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
+    <div className="min-h-screen flex flex-col">
+      {/* Navigation */}
+      <nav className="w-full border-b border-border bg-card">
+        <div className="container mx-auto px-4 py-4 flex justify-between items-center">
+          <h1 className="text-2xl font-bold text-primary">SnapHabit</h1>
+          <div className="flex gap-4">
+            <Link href="/login">
+              <Button variant="ghost">Login</Button>
+            </Link>
+            <Link href="/upload">
+              <Button>Get Started</Button>
+            </Link>
+          </div>
         </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+      </nav>
+
+      {/* Hero Section */}
+      <main className="flex-1 flex flex-col items-center justify-center px-4 py-16">
+        <div className="max-w-4xl mx-auto text-center space-y-8">
+          {/* Main Tagline */}
+          <div className="space-y-4">
+            <h2 className="text-5xl md:text-6xl font-bold tracking-tight">
+              Snap a photo. Get nutrition insights. Eat smarter — effortlessly.
+            </h2>
+            <p className="text-xl text-muted-foreground max-w-2xl mx-auto">
+              Upload a photo of your meal and let AI analyze calories, macros, 
+              and provide personalized nutrition advice.
+            </p>
+          </div>
+
+          {/* Features */}
+          <div className="grid md:grid-cols-3 gap-6 mt-12">
+            <div className="p-6 rounded-lg border border-border bg-card">
+              <Camera className="w-12 h-12 text-primary mb-4 mx-auto" />
+              <h3 className="text-xl font-semibold mb-2">Quick Capture</h3>
+              <p className="text-muted-foreground">
+                Simply snap a photo of your meal. No manual entry required.
+              </p>
+            </div>
+            <div className="p-6 rounded-lg border border-border bg-card">
+              <TrendingUp className="w-12 h-12 text-primary mb-4 mx-auto" />
+              <h3 className="text-xl font-semibold mb-2">Smart Analysis</h3>
+              <p className="text-muted-foreground">
+                AI automatically detects food, calories, and macronutrients.
+              </p>
+            </div>
+            <div className="p-6 rounded-lg border border-border bg-card">
+              <Sparkles className="w-12 h-12 text-primary mb-4 mx-auto" />
+              <h3 className="text-xl font-semibold mb-2">AI Insights</h3>
+              <p className="text-muted-foreground">
+                Get personalized advice on nutrients you might be missing.
+              </p>
+            </div>
+          </div>
+
+          {/* CTA */}
+          <div className="mt-12">
+            <Link href="/upload">
+              <Button size="lg" className="text-lg px-8 py-6">
+                Start Tracking Your Meals
+              </Button>
+            </Link>
+          </div>
         </div>
       </main>
+
+      {/* Footer */}
+      <footer className="w-full border-t border-border bg-card py-8">
+        <div className="container mx-auto px-4 text-center text-muted-foreground">
+          <p>© 2025 SnapHabit. Built with Next.js, Firebase, and AI.</p>
+        </div>
+      </footer>
     </div>
-  );
+  )
 }
