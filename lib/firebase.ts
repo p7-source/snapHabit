@@ -15,10 +15,10 @@ const firebaseConfig = {
 }
 
 // Initialize Firebase
-let app: FirebaseApp
-let auth: Auth
-let db: Firestore
-let storage: FirebaseStorage
+let app: FirebaseApp | undefined
+let auth: Auth | undefined
+let db: Firestore | undefined
+let storage: FirebaseStorage | undefined
 
 if (typeof window !== "undefined") {
   // Only initialize on client side
@@ -32,5 +32,31 @@ if (typeof window !== "undefined") {
   storage = getStorage(app)
 }
 
+// Export with fallback check
 export { auth, db, storage }
+
+// Helper function to get auth safely
+export function getAuthInstance(): Auth {
+  if (typeof window === "undefined") {
+    throw new Error("Firebase Auth can only be used on the client side")
+  }
+  if (!auth) {
+    if (!app) {
+      app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
+    }
+    auth = getAuth(app)
+  }
+  return auth
+}
+
+// Ensure auth is always initialized on client side when module loads
+// This prevents null/undefined errors when components use useAuthState
+if (typeof window !== "undefined") {
+  if (!app) {
+    app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApps()[0]
+  }
+  if (!auth) {
+    auth = getAuth(app)
+  }
+}
 

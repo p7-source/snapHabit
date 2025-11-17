@@ -34,7 +34,7 @@ export default function RegisterForm() {
 
     try {
       await createUserWithEmailAndPassword(auth, email, password)
-      router.push("/dashboard")
+      router.push("/onboarding")
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to create account"
       setError(errorMessage)
@@ -50,7 +50,7 @@ export default function RegisterForm() {
     try {
       const provider = new GoogleAuthProvider()
       await signInWithPopup(auth, provider)
-      router.push("/dashboard")
+      router.push("/onboarding")
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to sign in with Google"
       setError(errorMessage)

@@ -21,9 +21,30 @@ export default function LoginForm() {
 
     try {
       await signInWithEmailAndPassword(auth, email, password)
-      router.push("/dashboard")
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to sign in"
+      // Check if user has profile, redirect accordingly
+      const { getUserProfile } = await import("@/lib/user-profile")
+      const user = auth.currentUser
+      if (user) {
+        const profile = await getUserProfile(user.uid)
+        if (profile) {
+          router.push("/dashboard")
+        } else {
+          router.push("/onboarding")
+        }
+      }
+    } catch (err: any) {
+      let errorMessage = "Failed to sign in"
+      if (err.code === "auth/invalid-credential") {
+        errorMessage = "Invalid email or password. Please check your credentials or register a new account."
+      } else if (err.code === "auth/user-not-found") {
+        errorMessage = "No account found with this email. Please register first."
+      } else if (err.code === "auth/wrong-password") {
+        errorMessage = "Incorrect password. Please try again."
+      } else if (err.code === "auth/invalid-email") {
+        errorMessage = "Invalid email address. Please check your email format."
+      } else if (err.message) {
+        errorMessage = err.message
+      }
       setError(errorMessage)
     } finally {
       setLoading(false)
@@ -37,9 +58,24 @@ export default function LoginForm() {
     try {
       const provider = new GoogleAuthProvider()
       await signInWithPopup(auth, provider)
-      router.push("/dashboard")
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : "Failed to sign in with Google"
+      // Check if user has profile, redirect accordingly
+      const { getUserProfile } = await import("@/lib/user-profile")
+      const user = auth.currentUser
+      if (user) {
+        const profile = await getUserProfile(user.uid)
+        if (profile) {
+          router.push("/dashboard")
+        } else {
+          router.push("/onboarding")
+        }
+      }
+    } catch (err: any) {
+      let errorMessage = "Failed to sign in with Google"
+      if (err.code === "auth/popup-closed-by-user") {
+        errorMessage = "Sign-in popup was closed. Please try again."
+      } else if (err.message) {
+        errorMessage = err.message
+      }
       setError(errorMessage)
     } finally {
       setLoading(false)

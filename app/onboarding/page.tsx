@@ -5,7 +5,7 @@ import { Loader2 } from "lucide-react"
 
 // Dynamically import the client component with SSR disabled
 // This prevents SSR errors with Firebase Auth
-const UploadPageClient = dynamic(() => import("./page-client"), {
+const OnboardingFlowClient = dynamic(() => import("@/components/onboarding/OnboardingFlow"), {
   ssr: false,
   loading: () => (
     <div className="min-h-screen flex items-center justify-center">
@@ -14,6 +14,7 @@ const UploadPageClient = dynamic(() => import("./page-client"), {
   ),
 })
 
-export default function UploadPage() {
-  return <UploadPageClient />
+export default function OnboardingPage() {
+  return <OnboardingFlowClient />
 }
+

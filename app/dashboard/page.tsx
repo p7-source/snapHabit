@@ -3,51 +3,89 @@
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
 import { useAuthState } from "react-firebase-hooks/auth"
-import { auth, db } from "@/lib/firebase"
-import { collection, query, where, orderBy, onSnapshot, Timestamp } from "firebase/firestore"
+import { getAuthInstance, db } from "@/lib/firebase"
+import { collection, query, where, onSnapshot, Timestamp } from "firebase/firestore"
 import { Meal } from "@/types/meal"
+import { UserProfile } from "@/types/user"
+import { getUserProfile } from "@/lib/user-profile"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent } from "@/components/ui/card"
 import Link from "next/link"
-import { Loader2, Plus, TrendingUp, Sparkles, Calendar } from "lucide-react"
+import { Loader2, Plus } from "lucide-react"
+import { TimePeriod, getStartOfDay, getStartOfWeek } from "@/lib/date-helpers"
+import { processWeekData, processMonthData } from "@/lib/meal-helpers"
+import TimePeriodToggle from "@/components/dashboard/TimePeriodToggle"
+import DailyView from "@/components/dashboard/DailyView"
+import WeeklyView from "@/components/dashboard/WeeklyView"
+import MonthlyView from "@/components/dashboard/MonthlyView"
 
 export default function DashboardPage() {
-  const [user, loading] = useAuthState(auth)
-  const [meals, setMeals] = useState<Meal[]>([])
+  // Initialize auth synchronously on client side
+  let authInstance: any = null
+  if (typeof window !== "undefined") {
+    try {
+      authInstance = getAuthInstance()
+    } catch (error) {
+      console.error("Failed to initialize auth:", error)
+    }
+  }
+
+  const [user, loading] = useAuthState(authInstance)
+  const [allMeals, setAllMeals] = useState<Meal[]>([])
   const [loadingMeals, setLoadingMeals] = useState(true)
+  const [profile, setProfile] = useState<UserProfile | null>(null)
+  const [loadingProfile, setLoadingProfile] = useState(true)
+  const [period, setPeriod] = useState<TimePeriod>("daily")
+  const [currentWeekDate, setCurrentWeekDate] = useState<Date>(new Date())
+  const [currentMonth, setCurrentMonth] = useState<{ year: number; month: number }>({
+    year: new Date().getFullYear(),
+    month: new Date().getMonth(),
+  })
   const router = useRouter()
 
   useEffect(() => {
-    if (!loading && !user) {
+    if (authInstance && !loading && !user) {
       router.push("/login")
       return
     }
 
-    if (user) {
-      // Subscribe to user's meals
+    if (authInstance && user) {
+      // Fetch user profile
+      getUserProfile(user.uid).then((userProfile) => {
+        setProfile(userProfile)
+        setLoadingProfile(false)
+        
+        // Redirect to onboarding if profile doesn't exist
+        if (!userProfile) {
+          router.push("/onboarding")
+        }
+      })
+
+      // Subscribe to ALL user's meals (not just today)
       const q = query(
         collection(db, "meals"),
-        where("userId", "==", user.uid),
-        orderBy("createdAt", "desc")
+        where("userId", "==", user.uid)
       )
 
       const unsubscribe = onSnapshot(
         q,
         (snapshot) => {
-          const mealsData: Meal[] = snapshot.docs.map((doc) => {
-            const data = doc.data()
-            return {
-              id: doc.id,
-              userId: data.userId,
-              imageUrl: data.imageUrl,
-              foodName: data.foodName,
-              calories: data.calories,
-              macros: data.macros,
-              aiAdvice: data.aiAdvice,
-              createdAt: (data.createdAt as Timestamp)?.toDate() || new Date(),
-            }
-          })
-          setMeals(mealsData)
+          const mealsData: Meal[] = snapshot.docs
+            .map((doc) => {
+              const data = doc.data()
+              return {
+                id: doc.id,
+                userId: data.userId,
+                imageUrl: data.imageUrl,
+                foodName: data.foodName,
+                calories: data.calories,
+                macros: data.macros,
+                aiAdvice: data.aiAdvice,
+                createdAt: (data.createdAt as Timestamp)?.toDate() || new Date(),
+              }
+            })
+            // Sort by createdAt descending in memory (newest first)
+            .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          setAllMeals(mealsData)
           setLoadingMeals(false)
         },
         (error) => {
@@ -58,25 +96,43 @@ export default function DashboardPage() {
 
       return () => unsubscribe()
     }
-  }, [user, loading, router])
+  }, [user, loading, router, authInstance])
 
-  // Calculate totals
-  const totals = meals.reduce(
-    (acc, meal) => ({
-      calories: acc.calories + meal.calories,
-      protein: acc.protein + meal.macros.protein,
-      carbs: acc.carbs + meal.macros.carbs,
-      fat: acc.fat + meal.macros.fat,
-    }),
-    { calories: 0, protein: 0, carbs: 0, fat: 0 }
-  )
+  // Filter meals for current period
+  const today = new Date()
+  const todayStart = getStartOfDay(today)
 
-  if (loading || loadingMeals) {
+  let filteredMeals: Meal[] = []
+  if (period === "daily") {
+    // Filter to only today's meals
+    filteredMeals = allMeals.filter((meal) => {
+      const mealDate = getStartOfDay(meal.createdAt)
+      return mealDate.getTime() === todayStart.getTime()
+    })
+  } else {
+    // For weekly and monthly, use all meals (they'll be filtered in the view components)
+    filteredMeals = allMeals
+  }
+
+  // Process data for weekly and monthly views
+  const weekData = profile
+    ? processWeekData(allMeals, getStartOfWeek(currentWeekDate), profile)
+    : null
+
+  const monthData = profile
+    ? processMonthData(allMeals, currentMonth.year, currentMonth.month, profile)
+    : null
+
+  if (!authInstance || loading || loadingMeals || loadingProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
       </div>
     )
+  }
+
+  if (!profile) {
+    return null // Will redirect to onboarding
   }
 
   return (
@@ -98,8 +154,10 @@ export default function DashboardPage() {
               variant="ghost"
               onClick={async () => {
                 const { signOut } = await import("firebase/auth")
-                await signOut(auth)
-                router.push("/")
+                if (authInstance) {
+                  await signOut(authInstance)
+                  router.push("/")
+                }
               }}
             >
               Sign Out
@@ -112,145 +170,42 @@ export default function DashboardPage() {
       <main className="container mx-auto px-4 py-8 max-w-6xl">
         <div className="space-y-8">
           {/* Header */}
-          <div className="flex justify-between items-center">
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
             <div>
               <h2 className="text-4xl font-bold mb-2">Dashboard</h2>
               <p className="text-muted-foreground">
                 Track your meals and nutrition insights
               </p>
             </div>
-            <Link href="/upload">
-              <Button size="lg">
-                <Plus className="w-5 h-5 mr-2" />
-                Upload Meal
-              </Button>
-            </Link>
+            <div className="flex gap-4 items-center">
+              <TimePeriodToggle period={period} onPeriodChange={setPeriod} />
+              <Link href="/upload">
+                <Button size="lg">
+                  <Plus className="w-5 h-5 mr-2" />
+                  Upload Meal
+                </Button>
+              </Link>
+            </div>
           </div>
 
-          {/* Summary Cards */}
-          {meals.length > 0 && (
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground mb-1">Total Calories</p>
-                  <p className="text-3xl font-bold">{totals.calories}</p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    {meals.length} {meals.length === 1 ? "meal" : "meals"}
-                  </p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground mb-1">Protein</p>
-                  <p className="text-3xl font-bold">{totals.protein.toFixed(1)}g</p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground mb-1">Carbs</p>
-                  <p className="text-3xl font-bold">{totals.carbs.toFixed(1)}g</p>
-                </CardContent>
-              </Card>
-              <Card>
-                <CardContent className="pt-6">
-                  <p className="text-sm text-muted-foreground mb-1">Fat</p>
-                  <p className="text-3xl font-bold">{totals.fat.toFixed(1)}g</p>
-                </CardContent>
-              </Card>
-            </div>
+          {/* View Content */}
+          {period === "daily" && <DailyView meals={filteredMeals} profile={profile} />}
+          {period === "weekly" && weekData && (
+            <WeeklyView
+              weekData={weekData}
+              profile={profile}
+              onWeekChange={(date) => setCurrentWeekDate(date)}
+            />
           )}
-
-          {/* Meals List */}
-          {meals.length === 0 ? (
-            <Card>
-              <CardContent className="pt-12 pb-12 text-center">
-                <TrendingUp className="w-16 h-16 text-muted-foreground mx-auto mb-4" />
-                <h3 className="text-xl font-semibold mb-2">No meals tracked yet</h3>
-                <p className="text-muted-foreground mb-6">
-                  Start tracking your meals to see nutrition insights here
-                </p>
-                <Link href="/upload">
-                  <Button size="lg">
-                    <Plus className="w-5 h-5 mr-2" />
-                    Upload Your First Meal
-                  </Button>
-                </Link>
-              </CardContent>
-            </Card>
-          ) : (
-            <div className="space-y-4">
-              <h3 className="text-2xl font-semibold">Recent Meals</h3>
-              {meals.map((meal) => (
-                <Card key={meal.id}>
-                  <CardContent className="p-6">
-                    <div className="grid md:grid-cols-3 gap-6">
-                      {/* Image */}
-                      <div className="relative w-full h-48 rounded-lg overflow-hidden border border-border">
-                        <img
-                          src={meal.imageUrl}
-                          alt={meal.foodName}
-                          className="w-full h-full object-cover"
-                        />
-                      </div>
-
-                      {/* Details */}
-                      <div className="md:col-span-2 space-y-4">
-                        <div>
-                          <h4 className="text-2xl font-semibold mb-1">{meal.foodName}</h4>
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <Calendar className="w-4 h-4" />
-                            <span>
-                              {meal.createdAt.toLocaleDateString("en-US", {
-                                month: "short",
-                                day: "numeric",
-                                year: "numeric",
-                                hour: "numeric",
-                                minute: "2-digit",
-                              })}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Macros */}
-                        <div className="grid grid-cols-4 gap-4">
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Calories</p>
-                            <p className="text-lg font-semibold">{meal.calories}</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Protein</p>
-                            <p className="text-lg font-semibold">{meal.macros.protein}g</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Carbs</p>
-                            <p className="text-lg font-semibold">{meal.macros.carbs}g</p>
-                          </div>
-                          <div>
-                            <p className="text-xs text-muted-foreground mb-1">Fat</p>
-                            <p className="text-lg font-semibold">{meal.macros.fat}g</p>
-                          </div>
-                        </div>
-
-                        {/* AI Advice */}
-                        <div className="p-4 rounded-lg border border-border bg-card">
-                          <div className="flex items-start gap-2 mb-2">
-                            <Sparkles className="w-4 h-4 text-primary mt-0.5" />
-                            <h5 className="text-sm font-semibold">AI Advice</h5>
-                          </div>
-                          <p className="text-sm text-muted-foreground whitespace-pre-line">
-                            {meal.aiAdvice}
-                          </p>
-                        </div>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
+          {period === "monthly" && monthData && (
+            <MonthlyView
+              monthData={monthData}
+              profile={profile}
+              onMonthChange={(year, month) => setCurrentMonth({ year, month })}
+            />
           )}
         </div>
       </main>
     </div>
   )
 }
-

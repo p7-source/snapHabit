@@ -82,9 +82,16 @@ async function detectFoodWithVision(imageBase64: string): Promise<string> {
 
 // GPT-4o-mini function to analyze nutrition
 async function analyzeNutritionWithGPT(foodName: string, imageBase64: string): Promise<MealAnalysis> {
-  const systemPrompt = `You are a nutrition expert AI. Analyze food photos and provide:
-1. Food name (be specific)
-2. Estimated calories (realistic estimate)
+  const systemPrompt = `You are a nutrition expert AI. Analyze the FOOD PHOTO directly and provide accurate information. 
+
+IMPORTANT: 
+- Look at the actual image to identify what food is shown
+- Ignore any text hints if they don't match what you see in the image
+- Be accurate and specific about what you actually see in the photo
+
+Provide:
+1. Food name (be specific and accurate based on what you see in the image)
+2. Estimated calories (realistic estimate based on portion size visible)
 3. Macronutrients in grams:
    - Protein (g)
    - Carbs (g)
@@ -118,7 +125,7 @@ Be realistic with estimates. Don't include any other text.`
           content: [
             {
               type: "text",
-              text: `Analyze this food item: ${foodName}\n\nProvide nutrition information and advice.`,
+              text: `Analyze the food in this image. Look carefully at what is actually shown in the photo and provide accurate nutrition information. ${foodName ? `(Note: A preliminary detection suggested "${foodName}", but please verify by looking at the actual image.)` : ""}`,
             },
             {
               type: "image_url",
@@ -130,7 +137,7 @@ Be realistic with estimates. Don't include any other text.`
         },
       ],
       max_tokens: 500,
-      temperature: 0.7,
+      temperature: 0.3, // Lower temperature for more accurate identification
     })
 
     const content = response.choices[0]?.message?.content || "{}"
@@ -169,31 +176,61 @@ Be realistic with estimates. Don't include any other text.`
 
 export async function POST(request: NextRequest) {
   try {
+    console.log("📸 Analyze food API called")
+    
+    // Check if OpenAI API key is set
+    if (!process.env.OPENAI_API_KEY) {
+      console.error("❌ OPENAI_API_KEY is not set")
+      return NextResponse.json(
+        { error: "OpenAI API key is not configured. Please set OPENAI_API_KEY in your environment variables." },
+        { status: 500 }
+      )
+    }
+
     const formData = await request.formData()
     const imageFile = formData.get("image") as File
 
     if (!imageFile) {
+      console.error("❌ No image file provided")
       return NextResponse.json(
         { error: "No image file provided" },
         { status: 400 }
       )
     }
 
+    console.log("✅ Image file received:", imageFile.name, imageFile.size, "bytes")
+
     // Convert image to base64
     const arrayBuffer = await imageFile.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
     const imageBase64 = buffer.toString("base64")
+    console.log("✅ Image converted to base64, length:", imageBase64.length)
 
-    // Step 1: Detect food name using Vision API (or mock)
-    const foodName = await detectFoodWithVision(imageBase64)
+    // Step 1: Detect food name using Vision API (or mock) - this is just a hint
+    // GPT-4o-mini will analyze the image directly and may override this
+    console.log("🔍 Detecting food with Vision API (or mock)...")
+    const foodNameHint = await detectFoodWithVision(imageBase64)
+    console.log("✅ Food hint:", foodNameHint)
 
-    // Step 2: Analyze nutrition using GPT-4o-mini
-    const analysis = await analyzeNutritionWithGPT(foodName, imageBase64)
+    // Step 2: Analyze nutrition using GPT-4o-mini (it has vision capabilities)
+    // GPT will look at the actual image and provide accurate analysis
+    console.log("🤖 Analyzing nutrition with GPT-4o-mini...")
+    const analysis = await analyzeNutritionWithGPT(foodNameHint, imageBase64)
+    console.log("✅ Analysis complete:", analysis.foodName, analysis.calories, "kcal")
 
     return NextResponse.json(analysis)
   } catch (error) {
-    console.error("Analyze food error:", error)
+    console.error("❌ Analyze food error:", error)
     const errorMessage = error instanceof Error ? error.message : "Failed to analyze food"
+    
+    // Provide more helpful error messages
+    if (errorMessage.includes("apiKey") || errorMessage.includes("OPENAI")) {
+      return NextResponse.json(
+        { error: "OpenAI API key is missing or invalid. Please check your OPENAI_API_KEY environment variable." },
+        { status: 500 }
+      )
+    }
+    
     return NextResponse.json(
       { error: errorMessage },
       { status: 500 }
