@@ -75,7 +75,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="w-full border-t border-border bg-card py-8">
         <div className="container mx-auto px-4 text-center text-muted-foreground">
-          <p>© 2025 SnapHabit. Built with Next.js, Firebase, and AI.</p>
+          <p>© 2025 SnapHabit. Built with Next.js, Supabase, and AI.</p>
         </div>
       </footer>
     </div>

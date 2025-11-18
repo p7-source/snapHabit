@@ -2,9 +2,8 @@
 
 import { useEffect, useState } from "react"
 import { useRouter } from "next/navigation"
-import { useAuthState } from "react-firebase-hooks/auth"
-import { getAuthInstance, db } from "@/lib/firebase"
-import { collection, query, where, onSnapshot, Timestamp } from "firebase/firestore"
+import { useSupabaseAuth } from "@/lib/use-supabase-auth"
+import { getSupabaseClient } from "@/lib/supabase"
 import { Meal } from "@/types/meal"
 import { UserProfile } from "@/types/user"
 import { getUserProfile } from "@/lib/user-profile"
@@ -19,17 +18,7 @@ import WeeklyView from "@/components/dashboard/WeeklyView"
 import MonthlyView from "@/components/dashboard/MonthlyView"
 
 export default function DashboardPage() {
-  // Initialize auth synchronously on client side
-  let authInstance: any = null
-  if (typeof window !== "undefined") {
-    try {
-      authInstance = getAuthInstance()
-    } catch (error) {
-      console.error("Failed to initialize auth:", error)
-    }
-  }
-
-  const [user, loading] = useAuthState(authInstance)
+  const [user, loading] = useSupabaseAuth()
   const [allMeals, setAllMeals] = useState<Meal[]>([])
   const [loadingMeals, setLoadingMeals] = useState(true)
   const [profile, setProfile] = useState<UserProfile | null>(null)
@@ -43,14 +32,14 @@ export default function DashboardPage() {
   const router = useRouter()
 
   useEffect(() => {
-    if (authInstance && !loading && !user) {
+    if (!loading && !user) {
       router.push("/login")
       return
     }
 
-    if (authInstance && user) {
+    if (user) {
       // Fetch user profile
-      getUserProfile(user.uid).then((userProfile) => {
+      getUserProfile(user.id).then((userProfile) => {
         setProfile(userProfile)
         setLoadingProfile(false)
         
@@ -60,43 +49,78 @@ export default function DashboardPage() {
         }
       })
 
-      // Subscribe to ALL user's meals (not just today)
-      const q = query(
-        collection(db, "meals"),
-        where("userId", "==", user.uid)
-      )
+      // Subscribe to ALL user's meals (not just today) using Supabase real-time
+      const supabase = getSupabaseClient()
+      
+      // Initial fetch
+      supabase
+        .from('meals')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false })
+        .then(({ data, error }) => {
+          if (error) {
+            console.error("Error fetching meals:", error)
+            setLoadingMeals(false)
+            return
+          }
 
-      const unsubscribe = onSnapshot(
-        q,
-        (snapshot) => {
-          const mealsData: Meal[] = snapshot.docs
-            .map((doc) => {
-              const data = doc.data()
-              return {
-                id: doc.id,
-                userId: data.userId,
-                imageUrl: data.imageUrl,
-                foodName: data.foodName,
-                calories: data.calories,
-                macros: data.macros,
-                aiAdvice: data.aiAdvice,
-                createdAt: (data.createdAt as Timestamp)?.toDate() || new Date(),
-              }
-            })
-            // Sort by createdAt descending in memory (newest first)
-            .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          const mealsData: Meal[] = (data || []).map((meal) => ({
+            id: meal.id,
+            userId: meal.user_id,
+            imageUrl: meal.image_url,
+            foodName: meal.food_name,
+            calories: meal.calories,
+            macros: meal.macros,
+            aiAdvice: meal.ai_advice,
+            createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
+          }))
           setAllMeals(mealsData)
           setLoadingMeals(false)
-        },
-        (error) => {
-          console.error("Error fetching meals:", error)
-          setLoadingMeals(false)
-        }
-      )
+        })
 
-      return () => unsubscribe()
+      // Subscribe to real-time changes
+      const channel = supabase
+        .channel('meals-changes')
+        .on(
+          'postgres_changes',
+          {
+            event: '*',
+            schema: 'public',
+            table: 'meals',
+            filter: `user_id=eq.${user.id}`,
+          },
+          () => {
+            // Refetch meals on any change
+            supabase
+              .from('meals')
+              .select('*')
+              .eq('user_id', user.id)
+              .order('created_at', { ascending: false })
+              .then(({ data, error }) => {
+                if (!error && data) {
+                  const mealsData: Meal[] = data.map((meal) => ({
+                    id: meal.id,
+                    userId: meal.user_id,
+                    imageUrl: meal.image_url,
+                    foodName: meal.food_name,
+                    calories: meal.calories,
+                    macros: meal.macros,
+                    aiAdvice: meal.ai_advice,
+                    createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
+                  }))
+                  setAllMeals(mealsData)
+                }
+              })
+          }
+        )
+        .subscribe()
+
+      return () => {
+        supabase.removeChannel(channel)
+      }
     }
-  }, [user, loading, router, authInstance])
+  }, [user, loading, router])
 
   // Filter meals for current period
   const today = new Date()
@@ -123,7 +147,7 @@ export default function DashboardPage() {
     ? processMonthData(allMeals, currentMonth.year, currentMonth.month, profile)
     : null
 
-  if (!authInstance || loading || loadingMeals || loadingProfile) {
+  if (loading || loadingMeals || loadingProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -153,11 +177,9 @@ export default function DashboardPage() {
             <Button
               variant="ghost"
               onClick={async () => {
-                const { signOut } = await import("firebase/auth")
-                if (authInstance) {
-                  await signOut(authInstance)
-                  router.push("/")
-                }
+                const supabase = getSupabaseClient()
+                await supabase.auth.signOut()
+                router.push("/")
               }}
             >
               Sign Out

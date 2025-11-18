@@ -2,9 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { useAuthState } from "react-firebase-hooks/auth"
-import { getAuthInstance, db } from "@/lib/firebase"
-import { doc, setDoc, serverTimestamp } from "firebase/firestore"
+import { useSupabaseAuth } from "@/lib/use-supabase-auth"
+import { saveUserProfile } from "@/lib/user-profile"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tooltip } from "@/components/ui/tooltip"
@@ -26,17 +25,7 @@ import {
 type Step = 1 | 2 | 3
 
 export default function OnboardingFlow() {
-  // Initialize auth synchronously on client side
-  // Since this component is loaded with SSR disabled, window is always defined
-  let authInstance: any = null
-  try {
-    authInstance = getAuthInstance()
-  } catch (error) {
-    console.error("Failed to initialize auth:", error)
-  }
-
-  // useAuthState can handle null, but we ensure authInstance is set
-  const [user, loading] = useAuthState(authInstance || undefined)
+  const [user, loading] = useSupabaseAuth()
   const [step, setStep] = useState<Step>(1)
   const [saving, setSaving] = useState(false)
   const router = useRouter()
@@ -56,10 +45,10 @@ export default function OnboardingFlow() {
   const [customMacros, setCustomMacros] = useState<MacroTargets | null>(null)
 
   useEffect(() => {
-    if (authInstance && !loading && !user) {
+    if (!loading && !user) {
       router.push("/login")
     }
-  }, [user, loading, router, authInstance])
+  }, [user, loading, router])
 
   // Convert weight to kg
   const getWeightInKg = (): number => {
@@ -104,7 +93,7 @@ export default function OnboardingFlow() {
     }
   }, [step, goal, age, gender, weight, height, heightFeet, heightInches, weightUnit, heightUnit, activityLevel])
 
-  if (!authInstance || loading) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -135,8 +124,8 @@ export default function OnboardingFlow() {
       const weightKg = getWeightInKg()
       const heightCm = getHeightInCm()
 
-      const profile: Omit<UserProfile, "createdAt" | "updatedAt"> = {
-        userId: user.uid,
+      const profile: UserProfile = {
+        userId: user.id,
         goal: goal!,
         age: parseInt(age),
         gender: gender!,
@@ -144,15 +133,16 @@ export default function OnboardingFlow() {
         height: heightCm,
         activityLevel: activityLevel!,
         macroTargets: macroTargets,
+        createdAt: new Date(),
+        updatedAt: new Date(),
       }
 
-      await setDoc(doc(db, "profiles", user.uid), {
-        ...profile,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      })
-
-      router.push("/dashboard")
+      const success = await saveUserProfile(profile)
+      if (success) {
+        router.push("/dashboard")
+      } else {
+        alert("Failed to save profile. Please try again.")
+      }
     } catch (error) {
       console.error("Error saving profile:", error)
       alert("Failed to save profile. Please try again.")

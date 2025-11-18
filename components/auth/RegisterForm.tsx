@@ -1,8 +1,7 @@
 "use client"
 
 import { useState } from "react"
-import { createUserWithEmailAndPassword, signInWithPopup, GoogleAuthProvider } from "firebase/auth"
-import { auth } from "@/lib/firebase"
+import { getSupabaseClient } from "@/lib/supabase"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useRouter } from "next/navigation"
@@ -33,8 +32,26 @@ export default function RegisterForm() {
     }
 
     try {
-      await createUserWithEmailAndPassword(auth, email, password)
-      router.push("/onboarding")
+      const supabase = getSupabaseClient()
+      const { data, error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+      })
+
+      if (signUpError) {
+        let errorMessage = "Failed to create account"
+        if (signUpError.message.includes("already registered")) {
+          errorMessage = "An account with this email already exists. Please sign in instead."
+        } else {
+          errorMessage = signUpError.message
+        }
+        setError(errorMessage)
+        return
+      }
+
+      if (data.user) {
+        router.push("/onboarding")
+      }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to create account"
       setError(errorMessage)
@@ -48,13 +65,22 @@ export default function RegisterForm() {
     setError("")
 
     try {
-      const provider = new GoogleAuthProvider()
-      await signInWithPopup(auth, provider)
-      router.push("/onboarding")
+      const supabase = getSupabaseClient()
+      const { data, error: signInError } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      })
+
+      if (signInError) {
+        setError(signInError.message || "Failed to sign in with Google")
+        setLoading(false)
+      }
+      // OAuth redirect will happen
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to sign in with Google"
       setError(errorMessage)
-    } finally {
       setLoading(false)
     }
   }

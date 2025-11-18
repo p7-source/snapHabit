@@ -4,8 +4,7 @@ import dynamic from "next/dynamic"
 import { Loader2 } from "lucide-react"
 
 // Dynamically import the client component with SSR disabled
-// This prevents SSR errors with Supabase Auth
-const OnboardingFlowClient = dynamic(() => import("@/components/onboarding/OnboardingFlow"), {
+const TestSupabaseClient = dynamic(() => import("./page-client"), {
   ssr: false,
   loading: () => (
     <div className="min-h-screen flex items-center justify-center">
@@ -14,7 +13,7 @@ const OnboardingFlowClient = dynamic(() => import("@/components/onboarding/Onboa
   ),
 })
 
-export default function OnboardingPage() {
-  return <OnboardingFlowClient />
+export default function TestSupabasePage() {
+  return <TestSupabaseClient />
 }
 

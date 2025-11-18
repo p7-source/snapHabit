@@ -2,8 +2,8 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { useAuthState } from "react-firebase-hooks/auth"
-import { getAuthInstance } from "@/lib/firebase"
+import { useSupabaseAuth } from "@/lib/use-supabase-auth"
+import { getSupabaseClient } from "@/lib/supabase"
 import ImageUpload from "@/components/upload/ImageUpload"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -13,17 +13,7 @@ import { Loader2, TrendingUp, Sparkles } from "lucide-react"
 import { compressImage } from "@/lib/image-compress"
 
 export default function UploadPageClient() {
-  // Initialize auth synchronously on client side
-  let authInstance: any = null
-  if (typeof window !== "undefined") {
-    try {
-      authInstance = getAuthInstance()
-    } catch (error) {
-      console.error("Failed to initialize auth:", error)
-    }
-  }
-
-  const [user, loading] = useAuthState(authInstance)
+  const [user, loading] = useSupabaseAuth()
   const [selectedImage, setSelectedImage] = useState<File | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -35,12 +25,12 @@ export default function UploadPageClient() {
   const router = useRouter()
 
   useEffect(() => {
-    if (authInstance && !loading && !user) {
+    if (!loading && !user) {
       router.push("/login")
     }
-  }, [user, loading, router, authInstance])
+  }, [user, loading, router])
 
-  if (!authInstance || loading) {
+  if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
@@ -120,14 +110,6 @@ export default function UploadPageClient() {
     setError("")
     
     try {
-      // Verify user is still authenticated before starting
-      if (!authInstance?.currentUser || !user) {
-        setError("You have been signed out. Please sign in again.")
-        setSaving(false)
-        router.push("/login")
-        return
-      }
-
       // Step 1: Compress image (only if larger than 1MB)
       let imageToUpload = selectedImage
       if (selectedImage.size > 1024 * 1024) {
@@ -136,62 +118,31 @@ export default function UploadPageClient() {
         const originalSize = (selectedImage.size / 1024 / 1024).toFixed(2)
         const compressedSize = (imageToUpload.size / 1024 / 1024).toFixed(2)
         console.log(`Image compressed: ${originalSize}MB → ${compressedSize}MB`)
-        
-        // Check again after compression
-        if (!authInstance?.currentUser) {
-          setError("You have been signed out. Upload cancelled.")
-          setSaving(false)
-          return
-        }
       }
 
       setUploadProgress("Uploading image...")
 
-      // Step 2: Upload image to Firebase Storage
-      // Ensure we have a valid Blob/File object for Firebase Storage
-      const { ref, uploadBytes, getDownloadURL } = await import("firebase/storage")
-      const { storage } = await import("@/lib/firebase")
-      
-      if (!storage) {
-        throw new Error("Firebase Storage is not initialized. Please check your Firebase configuration.")
-      }
+      // Step 2: Upload image to Supabase Storage
+      const supabase = getSupabaseClient()
       
       // Validate the file/blob before uploading
       if (!imageToUpload || !(imageToUpload instanceof File || imageToUpload instanceof Blob)) {
         throw new Error("Invalid image file. Please select a valid image file.")
       }
       
-      // Ensure we have a Blob (File extends Blob, so this is safe)
-      let blobToUpload: Blob
-      if (imageToUpload instanceof File) {
-        // File extends Blob, so we can use it directly
-        blobToUpload = imageToUpload
-      } else {
-        // If it's already a Blob, use it directly
-        blobToUpload = imageToUpload
-      }
-      
       // Validate blob is not empty
-      if (blobToUpload.size === 0) {
+      if (imageToUpload.size === 0) {
         throw new Error("Image file is empty. Please select a valid image.")
       }
       
-      // CRITICAL: Verify authentication before upload
-      const currentUser = authInstance?.currentUser
-      if (!currentUser || !user || currentUser.uid !== user.uid) {
-        throw new Error("User authentication failed. Please sign in again.")
-      }
+      console.log("📤 Uploading to Supabase Storage...")
+      console.log("   ✅ User authenticated:", user.id)
+      console.log("   ✅ User email:", user.email || "N/A")
+      console.log("   ✅ User ID (for path):", user.id)
+      console.log("   Image size:", imageToUpload.size, "bytes")
+      console.log("   Image type:", imageToUpload.type || "image/jpeg")
       
-      console.log("📤 Uploading to Firebase Storage...")
-      console.log("   ✅ User authenticated:", currentUser.uid)
-      console.log("   ✅ User email:", currentUser.email || "N/A")
-      console.log("   ✅ User ID (for path):", user.uid)
-      console.log("   Image size:", blobToUpload.size, "bytes")
-      console.log("   Image type:", blobToUpload.type || "image/jpeg")
-      console.log("   Blob type:", blobToUpload instanceof File ? "File" : "Blob")
-      
-      // Create storage reference with proper file extension
-      // IMPORTANT: Path must match Storage rules: /meals/{userId}/{filename}
+      // Create storage path with proper file extension
       const fileExtension = imageToUpload instanceof File && imageToUpload.name 
         ? imageToUpload.name.split('.').pop() || 'jpg'
         : 'jpg'
@@ -199,119 +150,72 @@ export default function UploadPageClient() {
         ? imageToUpload.name.replace(/[^a-zA-Z0-9.-]/g, '_') // Sanitize filename
         : `image_${Date.now()}.${fileExtension}`
       
-      // Storage path MUST be: meals/{userId}/filename
-      // This matches the Storage rule: match /meals/{userId}/{allPaths=**}
-      const storagePath = `meals/${user.uid}/${Date.now()}_${fileName}`
-      const imageRef = ref(storage, storagePath)
+      // Storage path: {userId}/filename (matches Supabase Storage policy)
+      const storagePath = `${user.id}/${Date.now()}_${fileName}`
       
       console.log("   📁 Storage path:", storagePath)
-      console.log("   📁 Full path:", imageRef.fullPath)
-      console.log("   ✅ Path matches rule pattern: meals/{userId}/...")
+      console.log("   ✅ Path matches policy pattern: {userId}/...")
       
-      // Add timeout to prevent hanging
-      let uploadTimeout: NodeJS.Timeout | null = null
-      const uploadPromise = uploadBytes(imageRef, blobToUpload)
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        uploadTimeout = setTimeout(() => {
-          reject(new Error("Upload timeout: The upload took too long. Please check your internet connection and Firebase Storage rules."))
-        }, 30000) // 30 second timeout (reduced from 60)
-      })
+      // Upload to Supabase Storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('meal-images')
+        .upload(storagePath, imageToUpload, {
+          cacheControl: '3600',
+          upsert: false
+        })
       
-      try {
-        const snapshot = await Promise.race([uploadPromise, timeoutPromise])
-        // Clear timeout if upload succeeds
-        if (uploadTimeout) {
-          clearTimeout(uploadTimeout)
-        }
-        console.log("✅ Image uploaded successfully to Storage")
-        console.log("   Upload snapshot:", snapshot)
-      } catch (uploadError) {
-        // Clear timeout on error
-        if (uploadTimeout) {
-          clearTimeout(uploadTimeout)
-        }
-        
+      if (uploadError) {
         console.error("❌ Upload error:", uploadError)
-        console.error("   Error type:", typeof uploadError)
-        console.error("   Error details:", JSON.stringify(uploadError, Object.getOwnPropertyNames(uploadError)))
+        const errorMessage = uploadError.message || "Unknown error"
         
-        const errorMessage = uploadError instanceof Error ? uploadError.message : String(uploadError)
-        const errorCode = (uploadError as any)?.code || ""
-        
-        console.log("   Error message:", errorMessage)
-        console.log("   Error code:", errorCode)
-        
-        // Provide helpful error messages
-        if (errorMessage.includes("permission") || errorMessage.includes("unauthorized") || errorCode === "storage/unauthorized" || errorCode === "storage/permission-denied") {
-          throw new Error("Permission denied. Please check Firebase Storage rules allow authenticated users to upload. Go to Firebase Console → Storage → Rules and update them.")
-        } else if (errorMessage.includes("timeout")) {
-          throw new Error("Upload timeout: The upload took too long. This usually means Firebase Storage rules are blocking the upload. Please check your Storage rules.")
-        } else if (errorMessage.includes("network") || errorMessage.includes("fetch") || errorCode === "storage/network-request-failed") {
+        if (errorMessage.includes("permission") || errorMessage.includes("unauthorized")) {
+          throw new Error("Permission denied. Please check Supabase Storage policies allow authenticated users to upload.")
+        } else if (errorMessage.includes("network")) {
           throw new Error("Network error. Please check your internet connection and try again.")
-        } else if (errorCode === "storage/object-not-found") {
-          throw new Error("Storage object not found. The upload may have failed silently.")
         } else {
-          throw new Error(`Failed to upload image: ${errorMessage} (Code: ${errorCode}). Please check Firebase Storage rules and your internet connection.`)
+          throw new Error(`Failed to upload image: ${errorMessage}`)
         }
       }
       
-      // Check again after upload
-      if (!authInstance?.currentUser) {
-        setError("You have been signed out. Upload cancelled.")
-        setSaving(false)
-        return
-      }
+      console.log("✅ Image uploaded successfully to Supabase Storage")
       
       setUploadProgress("Getting image URL...")
       console.log("🔗 Getting download URL...")
-      let imageUrl: string
-      try {
-        // Get the download URL from the uploaded file reference
-        imageUrl = await getDownloadURL(imageRef)
-        console.log("✅ Image URL obtained:", imageUrl)
-        console.log("   URL length:", imageUrl.length)
-      } catch (urlError) {
-        console.error("❌ URL error:", urlError)
-        const errorMessage = urlError instanceof Error ? urlError.message : "Unknown error"
-        throw new Error(`Failed to get image URL: ${errorMessage}. The file may not have uploaded correctly.`)
-      }
-
-      // Check again before saving to Firestore
-      if (!authInstance?.currentUser) {
-        setError("You have been signed out. Upload cancelled.")
-        setSaving(false)
-        return
-      }
+      
+      // Get public URL (or signed URL if bucket is private)
+      const { data: urlData } = supabase.storage
+        .from('meal-images')
+        .getPublicUrl(storagePath)
+      
+      const imageUrl = urlData.publicUrl
+      console.log("✅ Image URL obtained:", imageUrl)
 
       setUploadProgress("Saving meal data...")
       
-      // Step 3: Save meal entry to Firestore
-      const { collection, addDoc, serverTimestamp } = await import("firebase/firestore")
-      const { db } = await import("@/lib/firebase")
-      
-      if (!db) {
-        throw new Error("Firestore is not initialized. Please check your Firebase configuration.")
-      }
-      
-      console.log("💾 Saving meal to Firestore...")
+      // Step 3: Save meal entry to Supabase database
+      console.log("💾 Saving meal to Supabase...")
       const mealDoc = {
-        userId: user.uid,
-        imageUrl,
-        foodName: adjustedAnalysis.foodName,
+        user_id: user.id,
+        image_url: imageUrl,
+        food_name: adjustedAnalysis.foodName,
         calories: adjustedAnalysis.calories,
         macros: adjustedAnalysis.macros,
-        aiAdvice: adjustedAnalysis.aiAdvice,
-        createdAt: serverTimestamp(),
+        ai_advice: adjustedAnalysis.aiAdvice,
       }
       console.log("📝 Meal data:", JSON.stringify(mealDoc, null, 2))
       
-      try {
-        const docRef = await addDoc(collection(db, "meals"), mealDoc)
-        console.log("✅ Meal saved to Firestore with ID:", docRef.id)
-      } catch (firestoreError) {
-        console.error("❌ Firestore error:", firestoreError)
-        throw new Error(`Failed to save meal: ${firestoreError instanceof Error ? firestoreError.message : "Unknown error"}`)
+      const { data: mealData, error: dbError } = await supabase
+        .from('meals')
+        .insert(mealDoc)
+        .select()
+        .single()
+      
+      if (dbError) {
+        console.error("❌ Database error:", dbError)
+        throw new Error(`Failed to save meal: ${dbError.message}`)
       }
+      
+      console.log("✅ Meal saved to Supabase with ID:", mealData.id)
 
       setUploadProgress("Done!")
       // Small delay to show "Done!" message
@@ -350,11 +254,9 @@ export default function UploadPageClient() {
             <Button
               variant="ghost"
               onClick={async () => {
-                const { signOut } = await import("firebase/auth")
-                if (authInstance) {
-                  await signOut(authInstance)
-                  router.push("/")
-                }
+                const supabase = getSupabaseClient()
+                await supabase.auth.signOut()
+                router.push("/")
               }}
             >
               Sign Out
