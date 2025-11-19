@@ -14,23 +14,52 @@ interface DailyViewProps {
 }
 
 export default function DailyView({ meals, profile }: DailyViewProps) {
-  // Calculate totals for today
+  // Calculate totals for today - ONLY from the meals passed to this component
+  // These should already be filtered to today's meals by the parent component
   const totals = meals.reduce(
-    (acc, meal) => ({
-      calories: acc.calories + meal.calories,
-      protein: acc.protein + meal.macros.protein,
-      carbs: acc.carbs + meal.macros.carbs,
-      fat: acc.fat + meal.macros.fat,
-    }),
+    (acc, meal) => {
+      // Ensure all values are numbers
+      const mealCalories = typeof meal.calories === 'number' ? meal.calories : Number(meal.calories) || 0
+      const mealProtein = typeof meal.macros?.protein === 'number' 
+        ? meal.macros.protein 
+        : Number(meal.macros?.protein) || 0
+      const mealCarbs = typeof meal.macros?.carbs === 'number' 
+        ? meal.macros.carbs 
+        : Number(meal.macros?.carbs) || 0
+      const mealFat = typeof meal.macros?.fat === 'number' 
+        ? meal.macros.fat 
+        : Number(meal.macros?.fat) || 0
+      
+      // Validate values are reasonable (not NaN or Infinity)
+      const safeCalories = isNaN(mealCalories) || !isFinite(mealCalories) ? 0 : mealCalories
+      const safeProtein = isNaN(mealProtein) || !isFinite(mealProtein) ? 0 : mealProtein
+      const safeCarbs = isNaN(mealCarbs) || !isFinite(mealCarbs) ? 0 : mealCarbs
+      const safeFat = isNaN(mealFat) || !isFinite(mealFat) ? 0 : mealFat
+      
+      return {
+        calories: acc.calories + safeCalories,
+        protein: acc.protein + safeProtein,
+        carbs: acc.carbs + safeCarbs,
+        fat: acc.fat + safeFat,
+      }
+    },
     { calories: 0, protein: 0, carbs: 0, fat: 0 }
   )
+  
+  // Final validation - ensure totals are reasonable
+  const finalTotals = {
+    calories: Math.max(0, Math.min(totals.calories, 50000)), // Cap at 50k (sanity check)
+    protein: Math.max(0, Math.min(totals.protein, 2000)), // Cap at 2000g
+    carbs: Math.max(0, Math.min(totals.carbs, 2000)), // Cap at 2000g
+    fat: Math.max(0, Math.min(totals.fat, 2000)), // Cap at 2000g
+  }
 
-  // Calculate remaining amounts
+  // Calculate remaining amounts using validated totals
   const remaining = {
-    calories: Math.max(0, profile.macroTargets.calories - totals.calories),
-    protein: Math.max(0, profile.macroTargets.protein - totals.protein),
-    carbs: Math.max(0, profile.macroTargets.carbs - totals.carbs),
-    fat: Math.max(0, profile.macroTargets.fat - totals.fat),
+    calories: Math.max(0, profile.macroTargets.calories - finalTotals.calories),
+    protein: Math.max(0, profile.macroTargets.protein - finalTotals.protein),
+    carbs: Math.max(0, profile.macroTargets.carbs - finalTotals.carbs),
+    fat: Math.max(0, profile.macroTargets.fat - finalTotals.fat),
   }
 
   return (
@@ -48,8 +77,18 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <Card>
             <CardContent className="pt-6">
+              {(() => {
+                console.log('🎨 Rendering ProgressCircle for Calories:', {
+                  value: totals.calories,
+                  max: profile.macroTargets.calories,
+                  mealsCount: meals.length,
+                  totals: totals,
+                  profileTargets: profile.macroTargets
+                })
+                return null
+              })()}
               <ProgressCircle
-                value={totals.calories}
+                value={finalTotals.calories}
                 max={profile.macroTargets.calories}
                 size={140}
                 label="Calories"
@@ -64,7 +103,7 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
           <Card>
             <CardContent className="pt-6">
               <ProgressCircle
-                value={totals.protein}
+                value={finalTotals.protein}
                 max={profile.macroTargets.protein}
                 size={140}
                 label="Protein"
@@ -79,7 +118,7 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
           <Card>
             <CardContent className="pt-6">
               <ProgressCircle
-                value={totals.carbs}
+                value={finalTotals.carbs}
                 max={profile.macroTargets.carbs}
                 size={140}
                 label="Carbs"
@@ -94,7 +133,7 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
           <Card>
             <CardContent className="pt-6">
               <ProgressCircle
-                value={totals.fat}
+                value={finalTotals.fat}
                 max={profile.macroTargets.fat}
                 size={140}
                 label="Fat"
@@ -113,7 +152,7 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm text-muted-foreground mb-1">Consumed</p>
-              <p className="text-2xl font-bold">{totals.calories}</p>
+              <p className="text-2xl font-bold">{finalTotals.calories}</p>
               <p className="text-xs text-muted-foreground mt-1">
                 / {profile.macroTargets.calories} kcal
               </p>
@@ -122,7 +161,7 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm text-muted-foreground mb-1">Protein</p>
-              <p className="text-2xl font-bold">{totals.protein.toFixed(1)}g</p>
+              <p className="text-2xl font-bold">{finalTotals.protein.toFixed(1)}g</p>
               <p className="text-xs text-muted-foreground mt-1">
                 / {profile.macroTargets.protein}g
               </p>
@@ -131,7 +170,7 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm text-muted-foreground mb-1">Carbs</p>
-              <p className="text-2xl font-bold">{totals.carbs.toFixed(1)}g</p>
+              <p className="text-2xl font-bold">{finalTotals.carbs.toFixed(1)}g</p>
               <p className="text-xs text-muted-foreground mt-1">
                 / {profile.macroTargets.carbs}g
               </p>
@@ -140,7 +179,7 @@ export default function DailyView({ meals, profile }: DailyViewProps) {
           <Card>
             <CardContent className="pt-6">
               <p className="text-sm text-muted-foreground mb-1">Fat</p>
-              <p className="text-2xl font-bold">{totals.fat.toFixed(1)}g</p>
+              <p className="text-2xl font-bold">{finalTotals.fat.toFixed(1)}g</p>
               <p className="text-xs text-muted-foreground mt-1">
                 / {profile.macroTargets.fat}g
               </p>

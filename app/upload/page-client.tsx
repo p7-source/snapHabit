@@ -9,7 +9,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { MealAnalysis } from "@/types/meal"
 import Link from "next/link"
-import { Loader2, TrendingUp, Sparkles } from "lucide-react"
+import { Loader2, TrendingUp, Sparkles, Plus } from "lucide-react"
 import { compressImage } from "@/lib/image-compress"
 
 export default function UploadPageClient() {
@@ -22,6 +22,7 @@ export default function UploadPageClient() {
   const [adjustedAnalysis, setAdjustedAnalysis] = useState<MealAnalysis | null>(null)
   const [portionMultiplier, setPortionMultiplier] = useState(1)
   const [error, setError] = useState("")
+  const [savedMeal, setSavedMeal] = useState<MealAnalysis | null>(null)
   const router = useRouter()
 
   useEffect(() => {
@@ -54,6 +55,18 @@ export default function UploadPageClient() {
     setAdjustedAnalysis(null)
     setPortionMultiplier(1)
     setError("")
+    setSavedMeal(null)
+  }
+
+  const handleUploadNext = () => {
+    // Clear everything and reset for next upload
+    setSelectedImage(null)
+    setAnalysis(null)
+    setAdjustedAnalysis(null)
+    setPortionMultiplier(1)
+    setError("")
+    setSavedMeal(null)
+    setUploadProgress("")
   }
 
   const handleAnalyze = async () => {
@@ -80,17 +93,17 @@ export default function UploadPageClient() {
       setAnalysis(result)
       setAdjustedAnalysis(result)
       setPortionMultiplier(1)
+      
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to analyze food"
       setError(errorMessage)
-      console.error("Analysis error:", err)
     } finally {
       setAnalyzing(false)
     }
   }
 
   const handlePortionChange = (multiplier: number) => {
-    if (!analysis) return
+    if (!analysis || !adjustedAnalysis) return
     setPortionMultiplier(multiplier)
     setAdjustedAnalysis({
       ...analysis,
@@ -104,7 +117,14 @@ export default function UploadPageClient() {
   }
 
   const handleSave = async () => {
-    if (!selectedImage || !adjustedAnalysis || !user) return
+    if (!selectedImage || !adjustedAnalysis || !user) {
+      console.error("❌ Cannot save: missing required data", {
+        hasImage: !!selectedImage,
+        hasAnalysis: !!adjustedAnalysis,
+        hasUser: !!user
+      })
+      return
+    }
 
     setSaving(true)
     setError("")
@@ -126,8 +146,17 @@ export default function UploadPageClient() {
       const supabase = getSupabaseClient()
       
       // Validate the file/blob before uploading
-      if (!imageToUpload || !(imageToUpload instanceof File || imageToUpload instanceof Blob)) {
+      if (!imageToUpload) {
         throw new Error("Invalid image file. Please select a valid image file.")
+      }
+      
+      // Type guard for File/Blob
+      const isFileOrBlob = (obj: any): obj is File | Blob => {
+        return obj instanceof File || obj instanceof Blob
+      }
+      
+      if (!isFileOrBlob(imageToUpload)) {
+        throw new Error("Invalid image file type. Please select a valid image file.")
       }
       
       // Validate blob is not empty
@@ -180,7 +209,6 @@ export default function UploadPageClient() {
       console.log("✅ Image uploaded successfully to Supabase Storage")
       
       setUploadProgress("Getting image URL...")
-      console.log("🔗 Getting download URL...")
       
       // Get public URL (or signed URL if bucket is private)
       const { data: urlData } = supabase.storage
@@ -188,12 +216,10 @@ export default function UploadPageClient() {
         .getPublicUrl(storagePath)
       
       const imageUrl = urlData.publicUrl
-      console.log("✅ Image URL obtained:", imageUrl)
 
       setUploadProgress("Saving meal data...")
       
       // Step 3: Save meal entry to Supabase database
-      console.log("💾 Saving meal to Supabase...")
       const mealDoc = {
         user_id: user.id,
         image_url: imageUrl,
@@ -202,7 +228,9 @@ export default function UploadPageClient() {
         macros: adjustedAnalysis.macros,
         ai_advice: adjustedAnalysis.aiAdvice,
       }
-      console.log("📝 Meal data:", JSON.stringify(mealDoc, null, 2))
+      
+      console.log("💾 Saving meal to database...")
+      console.log("   Meal document:", JSON.stringify(mealDoc, null, 2))
       
       const { data: mealData, error: dbError } = await supabase
         .from('meals')
@@ -212,16 +240,31 @@ export default function UploadPageClient() {
       
       if (dbError) {
         console.error("❌ Database error:", dbError)
+        console.error("   Error code:", dbError.code)
+        console.error("   Error message:", dbError.message)
+        console.error("   Error details:", dbError.details)
         throw new Error(`Failed to save meal: ${dbError.message}`)
       }
-      
-      console.log("✅ Meal saved to Supabase with ID:", mealData.id)
 
-      setUploadProgress("Done!")
-      // Small delay to show "Done!" message
-      setTimeout(() => {
-        router.push("/dashboard")
-      }, 500)
+      console.log("✅ Meal saved successfully to database!")
+      console.log("   Saved meal data:", JSON.stringify(mealData, null, 2))
+      console.log("   Meal ID:", mealData?.id)
+      console.log("   Meal created_at:", mealData?.created_at)
+      console.log("   Meal calories:", mealData?.calories)
+      console.log("   Meal macros:", mealData?.macros)
+
+      // Store saved meal for success display
+      setSavedMeal(adjustedAnalysis)
+      
+      // Clear form state but keep saved meal for display
+      setSelectedImage(null)
+      setAnalysis(null)
+      setAdjustedAnalysis(null)
+      setPortionMultiplier(1)
+      setUploadProgress("")
+      setSaving(false)
+      
+      console.log("✅ Upload flow completed successfully!")
     } catch (err) {
       console.error("❌ Save error:", err)
       
@@ -285,7 +328,65 @@ export default function UploadPageClient() {
           </div>
         )}
 
-        <div className="grid gap-6 md:grid-cols-2">
+        {/* Success Message */}
+        {savedMeal && !saving && (
+          <div className="mb-6 p-6 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
+            <div className="flex items-start gap-4">
+              <div className="flex-shrink-0">
+                <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center">
+                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                  </svg>
+                </div>
+              </div>
+              <div className="flex-1">
+                <h3 className="text-lg font-semibold text-green-900 dark:text-green-100 mb-2">
+                  Meal Saved Successfully! 🎉
+                </h3>
+                <p className="text-sm text-green-800 dark:text-green-200 mb-4">
+                  <strong>{savedMeal.foodName}</strong> has been saved to your dashboard.
+                </p>
+                <div className="grid grid-cols-4 gap-4 mb-4 p-3 bg-white dark:bg-gray-900 rounded-md">
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Calories</p>
+                    <p className="text-sm font-semibold">{savedMeal.calories} kcal</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Protein</p>
+                    <p className="text-sm font-semibold">{savedMeal.macros.protein}g</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Carbs</p>
+                    <p className="text-sm font-semibold">{savedMeal.macros.carbs}g</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-muted-foreground mb-1">Fats</p>
+                    <p className="text-sm font-semibold">{savedMeal.macros.fat}g</p>
+                  </div>
+                </div>
+                <div className="flex gap-3">
+                  <Button onClick={handleUploadNext} className="flex-1">
+                    <Plus className="w-4 h-4 mr-2" />
+                    Upload Next Meal
+                  </Button>
+                  <Button 
+                    variant="outline" 
+                    className="flex-1"
+                    onClick={() => {
+                      // Force full page reload to ensure dashboard refetches data
+                      window.location.href = `/dashboard?refetch=${Date.now()}`
+                    }}
+                  >
+                    View Dashboard
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {!savedMeal && (
+          <div className="grid gap-6 md:grid-cols-2">
           {/* Image Upload Section */}
           <Card>
             <CardHeader>
@@ -294,7 +395,11 @@ export default function UploadPageClient() {
             </CardHeader>
             <CardContent>
               {!selectedImage ? (
-                <ImageUpload onImageSelect={handleImageSelect} />
+                <ImageUpload 
+                  onImageSelect={handleImageSelect}
+                  selectedImage={null}
+                  onRemove={handleRemove}
+                />
               ) : (
                 <div className="space-y-4">
                   <div className="relative aspect-video rounded-lg overflow-hidden border border-border">
@@ -338,7 +443,7 @@ export default function UploadPageClient() {
               <CardDescription>Confirm the food and adjust portion size</CardDescription>
             </CardHeader>
             <CardContent>
-              {!analysis ? (
+              {!analysis || !adjustedAnalysis ? (
                 <div className="text-center py-12 text-muted-foreground">
                   <TrendingUp className="w-12 h-12 mx-auto mb-4 opacity-50" />
                   <p>Upload a photo and click "Analyze Food" to see results</p>
@@ -434,6 +539,7 @@ export default function UploadPageClient() {
             </CardContent>
           </Card>
         </div>
+        )}
       </main>
     </div>
   )

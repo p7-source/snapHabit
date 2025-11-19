@@ -5,12 +5,16 @@ import { getSupabaseClient } from "@/lib/supabase"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { useRouter } from "next/navigation"
+import Link from "next/link"
 
 export default function LoginForm() {
   const [email, setEmail] = useState("")
   const [password, setPassword] = useState("")
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState("")
+  const [showResendEmail, setShowResendEmail] = useState(false)
+  const [resendLoading, setResendLoading] = useState(false)
+  const [resendSuccess, setResendSuccess] = useState(false)
   const router = useRouter()
 
   const handleEmailLogin = async (e: React.FormEvent) => {
@@ -20,39 +24,136 @@ export default function LoginForm() {
 
     try {
       const supabase = getSupabaseClient()
+      console.log("🔐 Attempting login for:", email)
+      
       const { data, error: signInError } = await supabase.auth.signInWithPassword({
         email,
         password,
       })
 
       if (signInError) {
+        console.error("❌ Login error:", signInError)
+        console.error("   Error code:", signInError.status)
+        console.error("   Error message:", signInError.message)
+        
         let errorMessage = "Failed to sign in"
-        if (signInError.message.includes("Invalid login credentials")) {
+        const errorMsgLower = signInError.message?.toLowerCase() || ""
+        const errorStatus = signInError.status || ""
+        
+        if (errorMsgLower.includes("invalid login credentials") || errorMsgLower.includes("invalid credentials")) {
           errorMessage = "Invalid email or password. Please check your credentials or register a new account."
-        } else if (signInError.message.includes("Email not confirmed")) {
-          errorMessage = "Please verify your email before signing in."
+        } else if (
+          errorMsgLower.includes("email not confirmed") || 
+          errorMsgLower.includes("email_not_confirmed") ||
+          errorMsgLower.includes("email not verified") ||
+          errorMsgLower.includes("email needs to be confirmed") ||
+          errorStatus === 401
+        ) {
+          errorMessage = "Please check your email and click the confirmation link before signing in."
+          setError(errorMessage)
+          setShowResendEmail(true)
+          setLoading(false)
+          return
         } else {
-          errorMessage = signInError.message
+          errorMessage = signInError.message || "Failed to sign in. Please try again."
         }
         setError(errorMessage)
+        setLoading(false)
         return
       }
 
-      if (data.user) {
+      console.log("✅ Login successful, user:", data.user?.id)
+      console.log("✅ Session:", data.session ? "Present" : "Missing")
+
+      if (data.user && data.session) {
+        // Record daily login for streak tracking
+        try {
+          const { recordDailyLogin } = await import("@/lib/daily-logins")
+          await recordDailyLogin(data.user.id)
+        } catch (err) {
+          // Don't block login if daily login recording fails
+          console.warn("Failed to record daily login:", err)
+        }
+        
+        // Session is automatically set in cookies by createBrowserClient
+        // Wait a moment for cookies to be set
+        await new Promise(resolve => setTimeout(resolve, 300))
+        
+        // Verify session is set
+        const { data: { session: verifiedSession }, error: sessionError } = await supabase.auth.getSession()
+        if (sessionError) {
+          console.error("❌ Session verification error:", sessionError)
+          setError("Session verification failed. Please try again.")
+          setLoading(false)
+          return
+        }
+        
+        if (!verifiedSession) {
+          console.error("❌ Session not found after login")
+          setError("Session not set. Please try again.")
+          setLoading(false)
+          return
+        }
+
+        console.log("✅ Session verified, checking profile...")
+
         // Check if user has profile, redirect accordingly
         const { getUserProfile } = await import("@/lib/user-profile")
         const profile = await getUserProfile(data.user.id)
+        
+        console.log("✅ Profile check:", profile ? "Found" : "Not found")
+        console.log("🔄 Redirecting to:", profile ? "/dashboard" : "/onboarding")
+        
+        // Use window.location for full page reload to ensure middleware sees the session
         if (profile) {
-          router.push("/dashboard")
+          window.location.href = "/dashboard"
         } else {
-          router.push("/onboarding")
+          window.location.href = "/onboarding"
         }
+      } else {
+        console.error("❌ Login response missing user or session")
+        setError("Login failed. Please try again.")
+        setLoading(false)
       }
     } catch (err: any) {
       const errorMessage = err instanceof Error ? err.message : "Failed to sign in"
       setError(errorMessage)
     } finally {
       setLoading(false)
+    }
+  }
+
+  const handleResendConfirmation = async () => {
+    if (!email) {
+      setError("Please enter your email address first.")
+      return
+    }
+
+    setResendLoading(true)
+    setResendSuccess(false)
+    setError("")
+
+    try {
+      const supabase = getSupabaseClient()
+      const { error: resendError } = await supabase.auth.resend({
+        type: 'signup',
+        email: email,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
+      })
+
+      if (resendError) {
+        setError(`Failed to resend confirmation email: ${resendError.message}`)
+      } else {
+        setResendSuccess(true)
+        setError("")
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Failed to resend confirmation email"
+      setError(errorMessage)
+    } finally {
+      setResendLoading(false)
     }
   }
 
@@ -94,6 +195,25 @@ export default function LoginForm() {
         {error && (
           <div className="p-3 text-sm text-destructive bg-destructive/10 rounded-md">
             {error}
+            {showResendEmail && (
+              <div className="mt-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleResendConfirmation}
+                  disabled={resendLoading || resendSuccess}
+                  className="w-full"
+                >
+                  {resendLoading ? "Sending..." : resendSuccess ? "Email Sent! ✓" : "Resend Confirmation Email"}
+                </Button>
+                {resendSuccess && (
+                  <p className="text-xs text-green-600 dark:text-green-400 mt-2">
+                    Check your inbox for the confirmation email.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         )}
         
@@ -128,9 +248,20 @@ export default function LoginForm() {
             />
           </div>
 
-          <Button type="submit" className="w-full" disabled={loading}>
-            {loading ? "Signing in..." : "Sign In"}
-          </Button>
+          <div className="flex items-center justify-between">
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? "Signing in..." : "Sign In"}
+            </Button>
+          </div>
+          
+          <div className="text-right">
+            <Link
+              href="/forgot-password"
+              className="text-sm text-primary hover:underline"
+            >
+              Forgot password?
+            </Link>
+          </div>
         </form>
 
         <div className="relative">

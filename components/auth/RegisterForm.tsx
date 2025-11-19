@@ -33,24 +33,72 @@ export default function RegisterForm() {
 
     try {
       const supabase = getSupabaseClient()
+      console.log("🔐 Attempting registration for:", email)
+      
       const { data, error: signUpError } = await supabase.auth.signUp({
         email,
         password,
+        options: {
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
+        },
       })
 
       if (signUpError) {
+        console.error("❌ Registration error:", signUpError)
         let errorMessage = "Failed to create account"
-        if (signUpError.message.includes("already registered")) {
+        if (signUpError.message.includes("already registered") || signUpError.message.includes("already exists")) {
           errorMessage = "An account with this email already exists. Please sign in instead."
         } else {
           errorMessage = signUpError.message
         }
         setError(errorMessage)
+        setLoading(false)
         return
       }
 
-      if (data.user) {
-        router.push("/onboarding")
+      console.log("✅ Registration response:", {
+        user: data.user?.id,
+        session: data.session ? "Present" : "Missing",
+        needsConfirmation: !data.session && data.user
+      })
+
+      // Check if email confirmation is required
+      if (data.user && !data.session) {
+        // Email confirmation required - show message
+        setError("Please check your email to confirm your account before signing in.")
+        setLoading(false)
+        return
+      }
+
+      if (data.user && data.session) {
+        // Session is automatically set in cookies by createBrowserClient
+        // Wait a moment for cookies to be set
+        await new Promise(resolve => setTimeout(resolve, 300))
+        
+        // Verify session is set
+        const { data: { session: verifiedSession }, error: sessionError } = await supabase.auth.getSession()
+        if (sessionError) {
+          console.error("❌ Session verification error:", sessionError)
+          setError("Session verification failed. Please try again.")
+          setLoading(false)
+          return
+        }
+        
+        if (!verifiedSession) {
+          console.error("❌ Session not found after registration")
+          setError("Session not set. Please try again.")
+          setLoading(false)
+          return
+        }
+
+        console.log("✅ Session verified, redirecting to onboarding...")
+
+        // Use window.location for full page reload to ensure middleware sees the session
+        window.location.href = "/onboarding"
+      } else {
+        console.error("❌ Registration response missing user")
+        setError("Registration failed. Please try again.")
+        setLoading(false)
       }
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : "Failed to create account"
