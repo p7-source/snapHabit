@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useState, useMemo } from "react"
+import { useEffect, useState, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
 import { useSupabaseAuth } from "@/lib/use-supabase-auth"
 import { getSupabaseClient } from "@/lib/supabase"
@@ -12,6 +12,8 @@ import Link from "next/link"
 import { Loader2, Plus } from "lucide-react"
 import { TimePeriod, getStartOfDay, getStartOfWeek, isSameDay } from "@/lib/date-helpers"
 import { processWeekData, processMonthData } from "@/lib/meal-helpers"
+import { getImageUrl } from "@/lib/image-url"
+import { getTodaySummary } from "@/lib/daily-summaries"
 import TimePeriodToggle from "@/components/dashboard/TimePeriodToggle"
 import DailyView from "@/components/dashboard/DailyView"
 import WeeklyView from "@/components/dashboard/WeeklyView"
@@ -22,6 +24,7 @@ export default function DashboardPage() {
   const [user, loading] = useSupabaseAuth()
   const [allMeals, setAllMeals] = useState<Meal[]>([])
   const [loadingMeals, setLoadingMeals] = useState(true)
+  const [refetchKey, setRefetchKey] = useState(0) // Force re-render when meals update
   const [profile, setProfile] = useState<UserProfile | null>(null)
   const [loadingProfile, setLoadingProfile] = useState(true)
   const [period, setPeriod] = useState<TimePeriod>("daily")
@@ -32,16 +35,261 @@ export default function DashboardPage() {
     year: new Date().getFullYear(),
     month: new Date().getMonth(),
   })
+  const [dailySummary, setDailySummary] = useState<{
+    totalCalories: number
+    totalProtein: number
+    totalCarbs: number
+    totalFat: number
+    mealCount: number
+  } | null>(null)
   const router = useRouter()
 
+  // Fetch daily summary from daily_summaries table
+  const fetchDailySummary = useCallback(async () => {
+    if (!user) return
+    
+    console.log('📊 Fetching daily summary from daily_summaries table...')
+    try {
+      const summary = await getTodaySummary(user.id)
+      if (summary) {
+        console.log('✅ Daily summary fetched:', summary)
+        setDailySummary({
+          totalCalories: summary.totalCalories,
+          totalProtein: summary.totalProtein,
+          totalCarbs: summary.totalCarbs,
+          totalFat: summary.totalFat,
+          mealCount: summary.mealCount
+        })
+      } else {
+        console.log('⚠️ No daily summary found for today')
+        setDailySummary({
+          totalCalories: 0,
+          totalProtein: 0,
+          totalCarbs: 0,
+          totalFat: 0,
+          mealCount: 0
+        })
+      }
+    } catch (error) {
+      console.error('❌ Error fetching daily summary:', error)
+      setDailySummary(null) // Fall back to calculating from meals
+    }
+  }, [user])
+
+  // Refetch function - accessible to all useEffects
+  const refetchMeals = useCallback(async () => {
+    if (!user) {
+      console.log('⚠️ Cannot refetch: no user')
+      return
+    }
+    
+    console.log('🔄 ========== REFETCHING MEALS ==========')
+    console.log('🔄 User ID:', user.id)
+    console.log('🔄 Current allMeals count:', allMeals.length)
+    
+    // Fetch daily summary FIRST (from pre-calculated table)
+    await fetchDailySummary()
+    
+    const supabase = getSupabaseClient()
+    
+    // Fetch ALL meals (needed for weekly/monthly views and meal list display)
+    console.log('📡 Fetching meals from database...')
+    const { data, error } = await supabase
+      .from('meals')
+      .select('*')
+      .eq('user_id', user.id)
+      .order('created_at', { ascending: false })
+    
+    if (error) {
+      console.error('❌ Error refetching meals:', error)
+      console.error('   Error code:', error.code)
+      console.error('   Error message:', error.message)
+      setAllMeals([])
+      setLoadingMeals(false)
+      return
+    }
+    
+    console.log('📦 Raw database response:', {
+      dataLength: data?.length || 0,
+      hasData: !!data,
+      firstMeal: data?.[0] ? {
+        id: data[0].id,
+        food_name: data[0].food_name,
+        created_at: data[0].created_at,
+        calories: data[0].calories
+      } : null
+    })
+    
+    if (data) {
+      // Map meals and generate signed URLs for images
+      const mealsData: Meal[] = await Promise.all(
+        data.map(async (meal) => {
+          // Generate signed URL from storage path (optional - only if needed for display)
+          // For now, we'll skip image URLs since we only need macros
+          const imageUrl = meal.image_url ? await getImageUrl(meal.image_url).catch(() => '') : ''
+          
+          // Parse macros from database - handle JSONB format
+          let parsedMacros = { protein: 0, carbs: 0, fat: 0 }
+          if (meal.macros) {
+            if (typeof meal.macros === 'string') {
+              try {
+                parsedMacros = JSON.parse(meal.macros)
+              } catch (e) {
+                console.warn('⚠️ Failed to parse macros string:', meal.macros)
+                parsedMacros = { protein: 0, carbs: 0, fat: 0 }
+              }
+            } else if (typeof meal.macros === 'object') {
+              parsedMacros = meal.macros as { protein: number; carbs: number; fat: number }
+            }
+          }
+          
+          // Ensure all macro values are numbers
+          parsedMacros = {
+            protein: typeof parsedMacros.protein === 'number' ? parsedMacros.protein : Number(parsedMacros.protein) || 0,
+            carbs: typeof parsedMacros.carbs === 'number' ? parsedMacros.carbs : Number(parsedMacros.carbs) || 0,
+            fat: typeof parsedMacros.fat === 'number' ? parsedMacros.fat : Number(parsedMacros.fat) || 0,
+          }
+          
+          const mapped = {
+            id: meal.id,
+            userId: meal.user_id,
+            imageUrl: imageUrl, // Optional - only for display
+            foodName: meal.food_name,
+            calories: typeof meal.calories === 'string' ? Number(meal.calories) : (meal.calories || 0),
+            macros: parsedMacros,
+            aiAdvice: meal.ai_advice || "",
+            createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
+          }
+          
+          // Log macro data for verification
+          console.log('📊 Meal processed:', {
+            id: meal.id,
+            food: meal.food_name,
+            calories: mapped.calories,
+            macros: mapped.macros,
+            date: mapped.createdAt.toISOString()
+          })
+          
+          // Log macro parsing for debugging
+          if (meal.macros && (parsedMacros.protein === 0 && parsedMacros.carbs === 0 && parsedMacros.fat === 0)) {
+            console.warn('⚠️ Macros parsed as zeros for meal:', {
+              food: meal.food_name,
+              originalMacros: meal.macros,
+              parsedMacros: parsedMacros
+            })
+          }
+          
+          return mapped
+        })
+      )
+      
+      console.log(`✅ Refetched ${mealsData.length} meals`)
+      
+      // Calculate today's totals for logging
+      const now = new Date()
+      const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+      const todayMeals = mealsData.filter(m => {
+        const mealDate = m.createdAt instanceof Date ? m.createdAt : new Date(m.createdAt)
+        const mealDateStr = `${mealDate.getFullYear()}-${String(mealDate.getMonth() + 1).padStart(2, '0')}-${String(mealDate.getDate()).padStart(2, '0')}`
+        return mealDateStr === todayStr
+      })
+      const todayTotals = todayMeals.reduce((acc, m) => ({
+        calories: acc.calories + (m.calories || 0),
+        protein: acc.protein + (m.macros?.protein || 0),
+        carbs: acc.carbs + (m.macros?.carbs || 0),
+        fat: acc.fat + (m.macros?.fat || 0)
+      }), { calories: 0, protein: 0, carbs: 0, fat: 0 })
+      
+      console.log('📊 Meals data:', mealsData.map(m => ({
+        id: m.id,
+        food: m.foodName,
+        calories: m.calories,
+        protein: m.macros?.protein,
+        date: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+      })))
+      console.log('📈 Today\'s totals after refetch:', {
+        mealsCount: todayMeals.length,
+        totals: todayTotals,
+        meals: todayMeals.map(m => m.foodName)
+      })
+      
+      // Force state update - create new array reference and update key to force re-render
+      console.log('💾 Setting allMeals state with', mealsData.length, 'meals')
+      console.log('💾 Meals being set:', mealsData.map(m => ({
+        id: m.id,
+        food: m.foodName,
+        calories: m.calories,
+        macros: m.macros,
+        date: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+      })))
+      // Force state update with new array reference - CRITICAL for React to detect change
+      const newMeals = [...mealsData]
+      console.log('💾 ========== SETTING ALLMEALS STATE ==========')
+      console.log('💾 About to set allMeals state with', newMeals.length, 'meals')
+      console.log('💾 Current allMeals count:', allMeals.length)
+      console.log('💾 New meals count:', newMeals.length)
+      console.log('💾 Meals being set:', newMeals.map(m => ({
+        id: m.id,
+        food: m.foodName,
+        calories: m.calories,
+        macros: m.macros,
+        date: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+      })))
+      
+      // CRITICAL: Force state update - use functional update to ensure React detects change
+      setAllMeals(() => {
+        console.log('💾 setAllMeals called with', newMeals.length, 'meals')
+        return newMeals
+      })
+      
+      // Force DailyView to re-render by updating key
+      setRefetchKey(prev => {
+        const newKey = prev + 1
+        console.log('🔑 RefetchKey updated:', prev, '->', newKey)
+        return newKey
+      })
+      
+      setLoadingMeals(false)
+      
+      console.log('✅ State update complete')
+      console.log('✅ allMeals state set to', newMeals.length, 'meals')
+      console.log('✅ This WILL trigger filteredMeals useMemo to recalculate')
+      console.log('✅ This WILL trigger DailyView to re-render')
+    } else {
+      console.log('⚠️ No meals data returned from refetch')
+      console.log('   Data value:', data)
+      console.log('   Error value:', error)
+      setAllMeals([])
+      setLoadingMeals(false)
+    }
+  }, [user, fetchDailySummary])
+
   useEffect(() => {
+    console.log('🔍 ========== DASHBOARD useEffect TRIGGERED ==========')
+    console.log('🔍 Dashboard useEffect triggered:', {
+      loading,
+      hasUser: !!user,
+      userId: user?.id,
+      timestamp: new Date().toISOString()
+    })
+    
     if (!loading && !user) {
+      console.log('⚠️ No user, redirecting to login')
       router.push("/login")
       return
     }
 
+    if (!user) {
+      console.log('⚠️ User not available yet, waiting...')
+      return
+    }
+
     if (user) {
+      console.log('✅ User found, initializing dashboard for user:', user.id)
+      console.log('✅ Starting dashboard initialization...')
+      
       // Fetch user profile
+      console.log('👤 Fetching user profile...')
       getUserProfile(user.id).then((userProfile) => {
         setProfile(userProfile)
         setLoadingProfile(false)
@@ -51,6 +299,9 @@ export default function DashboardPage() {
           router.push("/onboarding")
         }
       })
+      
+      // Fetch daily summary (from daily_summaries table)
+      fetchDailySummary()
       
       // Fetch login streak and total days (silently fail if table doesn't exist)
       Promise.all([
@@ -80,51 +331,195 @@ export default function DashboardPage() {
         todayLocal: now.toLocaleDateString(),
       })
       
-      // Initial fetch - get ALL meals (we'll filter by date in frontend for accuracy)
-      supabase
+      // Initial fetch - get ALL meals (for weekly/monthly views) but also fetch today's meals separately
+      // For daily view, we'll use database-level date filtering to avoid timezone issues
+      // Reuse the 'now' variable already defined above
+      const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
+      const todayEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999)
+      
+      // Fetch ALL meals for weekly/monthly views
+      console.log('📡 ========== INITIAL FETCH STARTING ==========')
+      console.log('📡 Initial fetch: Fetching meals from database...')
+      console.log('📡 User ID for query:', user.id)
+      console.log('📡 Supabase client exists:', !!supabase)
+      
+      if (!supabase) {
+        console.error('❌ Supabase client is null/undefined!')
+        setAllMeals([])
+        setLoadingMeals(false)
+        return
+      }
+      
+      console.log('📡 Constructing query...')
+      const query = supabase
         .from('meals')
         .select('*')
         .eq('user_id', user.id)
         .order('created_at', { ascending: false })
-        .then(({ data, error }) => {
+      
+      console.log('📡 Query constructed, executing...')
+      console.log('📡 Query will fetch meals for user_id:', user.id)
+      
+      query.then(async ({ data, error }) => {
+        try {
+          console.log('📡 Query response received:', {
+            hasData: !!data,
+            dataLength: data?.length || 0,
+            hasError: !!error,
+            error: error ? JSON.stringify(error, null, 2) : null
+          })
+          
           if (error) {
             console.error('❌ Error fetching meals:', error)
             console.error('   Error code:', error.code)
             console.error('   Error message:', error.message)
             console.error('   Error details:', error.details)
+            console.error('   Error hint:', error.hint)
+            setLoadingMeals(false)
+            setAllMeals([]) // Ensure state is set even on error
+            return
+          }
+          
+          if (!data) {
+            console.warn('⚠️ No data returned from query (data is null/undefined)')
+            setAllMeals([])
             setLoadingMeals(false)
             return
           }
 
-          const mealsData: Meal[] = (data || []).map((meal) => {
-            const mapped = {
-              id: meal.id,
-              userId: meal.user_id,
-              imageUrl: meal.image_url,
-              foodName: meal.food_name,
-              calories: typeof meal.calories === 'string' ? Number(meal.calories) : (meal.calories || 0),
-              macros: meal.macros || { protein: 0, carbs: 0, fat: 0 },
-              aiAdvice: meal.ai_advice || "",
-              createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
-            }
-            
-            // Ensure macros are numbers
-            if (mapped.macros && typeof mapped.macros === 'object') {
-              mapped.macros = {
-                protein: typeof mapped.macros.protein === 'string' ? Number(mapped.macros.protein) : (mapped.macros.protein || 0),
-                carbs: typeof mapped.macros.carbs === 'string' ? Number(mapped.macros.carbs) : (mapped.macros.carbs || 0),
-                fat: typeof mapped.macros.fat === 'string' ? Number(mapped.macros.fat) : (mapped.macros.fat || 0),
-              }
-            }
-            
-            return mapped
+          console.log('📦 Initial fetch: Raw database response:', {
+            dataLength: data?.length || 0,
+            hasData: !!data,
+            firstMeal: data?.[0] ? {
+              id: data[0].id,
+              food_name: data[0].food_name,
+              created_at: data[0].created_at,
+              calories: data[0].calories
+            } : null
           })
-          
-          setAllMeals(mealsData)
-          setLoadingMeals(false)
-        })
 
-      // Subscribe to real-time changes (optional - app works without it)
+          // Map meals and generate signed URLs for images
+          const mealsData: Meal[] = await Promise.all(
+            (data || []).map(async (meal) => {
+              // Generate signed URL from storage path (or use full URL if already a URL)
+              console.log('🖼️ Initial fetch - Processing meal image:', {
+                mealId: meal.id,
+                foodName: meal.food_name,
+                image_url: meal.image_url,
+                image_urlType: typeof meal.image_url
+              })
+              const imageUrl = await getImageUrl(meal.image_url)
+              console.log('🖼️ Initial fetch - Generated image URL:', {
+                mealId: meal.id,
+                foodName: meal.food_name,
+                originalPath: meal.image_url,
+                signedUrl: imageUrl,
+                hasUrl: !!imageUrl
+              })
+              
+              // Parse macros from database - handle JSONB format
+              let parsedMacros = { protein: 0, carbs: 0, fat: 0 }
+              if (meal.macros) {
+                if (typeof meal.macros === 'string') {
+                  try {
+                    parsedMacros = JSON.parse(meal.macros)
+                  } catch (e) {
+                    console.warn('⚠️ Failed to parse macros string:', meal.macros)
+                    parsedMacros = { protein: 0, carbs: 0, fat: 0 }
+                  }
+                } else if (typeof meal.macros === 'object') {
+                  parsedMacros = meal.macros as { protein: number; carbs: number; fat: number }
+                }
+              }
+              
+              // Ensure all macro values are numbers
+              parsedMacros = {
+                protein: typeof parsedMacros.protein === 'number' ? parsedMacros.protein : Number(parsedMacros.protein) || 0,
+                carbs: typeof parsedMacros.carbs === 'number' ? parsedMacros.carbs : Number(parsedMacros.carbs) || 0,
+                fat: typeof parsedMacros.fat === 'number' ? parsedMacros.fat : Number(parsedMacros.fat) || 0,
+              }
+              
+              const mapped = {
+                id: meal.id,
+                userId: meal.user_id,
+                imageUrl: imageUrl,
+                foodName: meal.food_name,
+                calories: typeof meal.calories === 'string' ? Number(meal.calories) : (meal.calories || 0),
+                macros: parsedMacros,
+                aiAdvice: meal.ai_advice || "",
+                createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
+              }
+              
+              // Log macro parsing for debugging
+              if (meal.macros && (parsedMacros.protein === 0 && parsedMacros.carbs === 0 && parsedMacros.fat === 0)) {
+                console.warn('⚠️ Macros parsed as zeros for meal:', {
+                  food: meal.food_name,
+                  originalMacros: meal.macros,
+                  parsedMacros: parsedMacros
+                })
+              }
+              
+              return mapped
+            })
+          )
+          
+          console.log(`✅ Initial fetch: Loaded ${mealsData.length} meals`)
+          console.log('📊 Initial fetch: Meals data:', mealsData.map(m => ({
+            id: m.id,
+            food: m.foodName,
+            calories: m.calories,
+            macros: m.macros,
+            date: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+          })))
+          
+          console.log('💾 Setting allMeals state with', mealsData.length, 'meals')
+          // Force state update with new array
+          setAllMeals([...mealsData])
+          setRefetchKey(prev => prev + 1)
+          setLoadingMeals(false)
+          console.log('✅ Initial fetch complete - allMeals state updated')
+          console.log('✅ ========== INITIAL FETCH COMPLETE ==========')
+          
+          // ALWAYS refetch again after 3 seconds if we came from upload (to catch newly saved meal)
+          // This ensures we get the meal even if the initial fetch happened before the database commit
+          if (typeof window !== 'undefined') {
+            const urlParams = new URLSearchParams(window.location.search)
+            if (urlParams.has('refetch')) {
+              console.log('🔄 ========== REFETCH PARAM DETECTED ==========')
+              console.log('🔄 Meal was just saved! Will refetch in 3 seconds to catch it...')
+              
+              // Refetch after 3 seconds (gives database time to commit)
+              setTimeout(() => {
+                console.log('🔄 ========== SECONDARY REFETCH (CATCHING NEW MEAL) ==========')
+                console.log('🔄 Calling refetchMeals to get the newly saved meal...')
+                
+                if (refetchMeals && typeof refetchMeals === 'function') {
+                  refetchMeals()
+                    .then(() => {
+                      console.log('✅ Secondary refetch completed successfully')
+                      console.log('✅ Dashboard should now show the new meal')
+                    })
+                    .catch(err => {
+                      console.error('❌ Secondary refetch failed:', err)
+                    })
+                } else {
+                  console.error('❌ refetchMeals not available for secondary refetch')
+                }
+              }, 3000) // Wait 3 seconds for database commit
+            }
+          }
+        } catch (err) {
+          console.error('❌ ========== INITIAL FETCH ERROR ==========')
+          console.error('❌ Promise error in initial fetch:', err)
+          console.error('   Error type:', err?.constructor?.name)
+          console.error('   Error message:', err instanceof Error ? err.message : String(err))
+          console.error('   Error stack:', err instanceof Error ? err.stack : 'No stack trace')
+          setAllMeals([])
+          setLoadingMeals(false)
+        }
+      })
+
+      // Subscribe to real-time changes
       let channel: any = null
       try {
         channel = supabase
@@ -138,98 +533,47 @@ export default function DashboardPage() {
               filter: `user_id=eq.${user.id}`,
             },
             (payload) => {
-            const eventType = payload.eventType
-            
-            // For INSERT events, immediately refetch to get the new meal
-            if (eventType === 'INSERT') {
-              console.log('🆕 Real-time INSERT event detected, refetching meals...')
-              // Small delay to ensure database commit is complete
-              setTimeout(() => {
-                  supabase
-                    .from('meals')
-                    .select('*')
-                    .eq('user_id', user.id)
-                    .order('created_at', { ascending: false })
-                    .then(({ data, error }) => {
-                      if (error) {
-                        console.error('❌ Error in real-time refetch:', error)
-                        return
-                      }
-                    if (data) {
-                      const mealsData: Meal[] = data.map((meal) => {
-                        const mapped = {
-                          id: meal.id,
-                          userId: meal.user_id,
-                          imageUrl: meal.image_url,
-                          foodName: meal.food_name,
-                          calories: typeof meal.calories === 'string' ? Number(meal.calories) : (meal.calories || 0),
-                          macros: meal.macros || { protein: 0, carbs: 0, fat: 0 },
-                          aiAdvice: meal.ai_advice || "",
-                          createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
-                        }
-                        
-                        // Ensure macros are numbers
-                        if (mapped.macros && typeof mapped.macros === 'object') {
-                          mapped.macros = {
-                            protein: typeof mapped.macros.protein === 'string' ? Number(mapped.macros.protein) : (mapped.macros.protein || 0),
-                            carbs: typeof mapped.macros.carbs === 'string' ? Number(mapped.macros.carbs) : (mapped.macros.carbs || 0),
-                            fat: typeof mapped.macros.fat === 'string' ? Number(mapped.macros.fat) : (mapped.macros.fat || 0),
-                          }
-                        }
-                        
-                        return mapped
-                      })
-                      setAllMeals(mealsData)
-                    }
+              const eventType = payload.eventType
+              console.log('🔄 Real-time event received:', eventType, payload)
+              
+              // For INSERT events, refetch to get the new meal
+              if (eventType === 'INSERT') {
+                console.log('🆕 ========== REAL-TIME: NEW MEAL INSERTED ==========')
+                console.log('🆕 New meal inserted, refetching immediately...')
+                console.log('🆕 Meal data:', payload.new)
+                console.log('🆕 Calling refetchMeals in 1 second...')
+                // Wait 1 second to ensure database commit is complete
+                setTimeout(() => {
+                  console.log('🔄 Real-time: Calling refetchMeals now...')
+                  if (refetchMeals && typeof refetchMeals === 'function') {
+                    refetchMeals().catch(err => {
+                      console.error('❌ Error in real-time refetch:', err)
                     })
-                }, 500) // Increased delay to ensure DB commit is complete
-              } else {
-                // For UPDATE/DELETE, refetch immediately
-                supabase
-                  .from('meals')
-                  .select('*')
-                  .eq('user_id', user.id)
-                  .order('created_at', { ascending: false })
-                  .then(({ data, error }) => {
-                    if (error) {
-                      return
-                    }
-                  if (data) {
-                    const mealsData: Meal[] = data.map((meal) => {
-                      const mapped = {
-                        id: meal.id,
-                        userId: meal.user_id,
-                        imageUrl: meal.image_url,
-                        foodName: meal.food_name,
-                        calories: typeof meal.calories === 'string' ? Number(meal.calories) : (meal.calories || 0),
-                        macros: meal.macros || { protein: 0, carbs: 0, fat: 0 },
-                        aiAdvice: meal.ai_advice || "",
-                        createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
-                      }
-                      
-                      // Ensure macros are numbers
-                      if (mapped.macros && typeof mapped.macros === 'object') {
-                        mapped.macros = {
-                          protein: typeof mapped.macros.protein === 'string' ? Number(mapped.macros.protein) : (mapped.macros.protein || 0),
-                          carbs: typeof mapped.macros.carbs === 'string' ? Number(mapped.macros.carbs) : (mapped.macros.carbs || 0),
-                          fat: typeof mapped.macros.fat === 'string' ? Number(mapped.macros.fat) : (mapped.macros.fat || 0),
-                        }
-                      }
-                      
-                      return mapped
-                    })
-                    console.log('🔄 Real-time refetch (UPDATE/DELETE):', mealsData.length, 'meals')
-                    setAllMeals(mealsData)
+                  } else {
+                    console.error('❌ refetchMeals not available in real-time handler')
                   }
-                  })
+                }, 1000) // Wait 1 second for database commit
+              } else if (eventType === 'UPDATE' || eventType === 'DELETE') {
+                console.log(`🔄 Meal ${eventType.toLowerCase()}d, refetching...`)
+                setTimeout(() => {
+                  if (refetchMeals && typeof refetchMeals === 'function') {
+                    refetchMeals().catch(err => {
+                      console.error('❌ Error in real-time refetch:', err)
+                    })
+                  }
+                }, 500)
               }
             }
           )
-        .subscribe(() => {
-          // Real-time subscription is optional - the app will work with focus/visibility-based refetching
-        })
+          .subscribe((status) => {
+            if (status === 'SUBSCRIBED') {
+              console.log('✅ Real-time subscription active')
+            } else if (status === 'CHANNEL_ERROR') {
+              console.warn('⚠️ Real-time subscription error - will use fallback refetch')
+            }
+          })
       } catch (error) {
-        // Real-time is optional - the app will work with focus/visibility-based refetching
+        console.warn('⚠️ Real-time subscription failed - will use fallback refetch:', error)
       }
 
       return () => {
@@ -242,109 +586,80 @@ export default function DashboardPage() {
         }
       }
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user, loading, router])
 
-  // Refetch meals when page comes into focus, visibility changes, or URL has refetch parameter
+  // ALWAYS refetch meals when page loads (especially after redirect from upload)
   useEffect(() => {
     if (!user) return
 
-    const refetchMeals = async () => {
-      console.log('🔄 Starting refetchMeals...')
-      const supabase = getSupabaseClient()
-      const { data, error } = await supabase
-        .from('meals')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false })
-      
-      if (error) {
-        console.error('❌ Error refetching meals:', error)
-        return
-      }
-      
-      if (data) {
-        const mealsData: Meal[] = data.map((meal) => {
-          const mapped = {
-            id: meal.id,
-            userId: meal.user_id,
-            imageUrl: meal.image_url,
-            foodName: meal.food_name,
-            calories: typeof meal.calories === 'string' ? Number(meal.calories) : (meal.calories || 0),
-            macros: meal.macros || { protein: 0, carbs: 0, fat: 0 },
-            aiAdvice: meal.ai_advice || "",
-            createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
-          }
-          
-          // Ensure macros are numbers
-          if (mapped.macros && typeof mapped.macros === 'object') {
-            mapped.macros = {
-              protein: typeof mapped.macros.protein === 'string' ? Number(mapped.macros.protein) : (mapped.macros.protein || 0),
-              carbs: typeof mapped.macros.carbs === 'string' ? Number(mapped.macros.carbs) : (mapped.macros.carbs || 0),
-              fat: typeof mapped.macros.fat === 'string' ? Number(mapped.macros.fat) : (mapped.macros.fat || 0),
-            }
-          }
-          
-          return mapped
-        })
-        console.log('✅ Refetched meals:', mealsData.length, 'meals')
-        if (mealsData.length > 0) {
-          console.log('📋 Latest meal:', {
-            food: mealsData[0].foodName,
-            calories: mealsData[0].calories,
-            date: mealsData[0].createdAt.toISOString()
-          })
-        }
-        setAllMeals(mealsData)
-      } else {
-        console.log('⚠️ No meals data returned from refetch')
-      }
-    }
-
-    // Check if URL has refetch parameter (from upload redirect)
-    // This should run immediately on mount if refetch param is present
+    // Clean up refetch parameter from URL
     if (typeof window !== 'undefined') {
       const urlParams = new URLSearchParams(window.location.search)
       if (urlParams.has('refetch')) {
-        console.log('🔄 Refetch parameter detected in URL, will refetch meals...')
         urlParams.delete('refetch')
         const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '')
         window.history.replaceState({}, '', newUrl)
-        // Refetch after a short delay to ensure database commit is complete
-        // Use a longer delay to ensure the DB transaction has fully committed
-        setTimeout(() => {
-          console.log('🔄 Executing refetch from URL parameter (after delay)...')
-          refetchMeals()
-        }, 800) // Increased delay to ensure DB commit is complete
       }
+    }
+
+    // ALWAYS refetch after page loads - use multiple attempts to ensure it works
+    console.log('⏰ Setting up auto-refetch (multiple attempts)...')
+    
+    // Attempt 1: After 1 second
+    const timeout1 = setTimeout(() => {
+      console.log('🔄 Auto-refetch attempt 1 (1s delay)...')
+      if (refetchMeals && typeof refetchMeals === 'function') {
+        refetchMeals().catch(err => console.error('❌ Refetch attempt 1 failed:', err))
+      }
+    }, 1000)
+    
+    // Attempt 2: After 2 seconds (more reliable)
+    const timeout2 = setTimeout(() => {
+      console.log('🔄 Auto-refetch attempt 2 (2s delay)...')
+      if (refetchMeals && typeof refetchMeals === 'function') {
+        refetchMeals().catch(err => console.error('❌ Refetch attempt 2 failed:', err))
+      }
+    }, 2000)
+    
+    // Attempt 3: After 3 seconds (fallback)
+    const timeout3 = setTimeout(() => {
+      console.log('🔄 Auto-refetch attempt 3 (3s delay)...')
+      if (refetchMeals && typeof refetchMeals === 'function') {
+        refetchMeals().catch(err => console.error('❌ Refetch attempt 3 failed:', err))
+      }
+    }, 3000)
+    
+    return () => {
+      clearTimeout(timeout1)
+      clearTimeout(timeout2)
+      clearTimeout(timeout3)
     }
 
     // Refetch when page becomes visible (e.g., user navigates back from upload)
     const handleFocus = () => {
       console.log('👁️ Window focused, refetching meals...')
-      // Small delay to ensure we're not refetching too frequently
       setTimeout(() => {
-        refetchMeals()
-      }, 200)
+        if (refetchMeals) refetchMeals()
+      }, 300)
     }
 
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         console.log('👁️ Page became visible, refetching meals...')
-        // Small delay to ensure we're not refetching too frequently
         setTimeout(() => {
-          refetchMeals()
-        }, 200)
+          if (refetchMeals) refetchMeals()
+        }, 300)
       }
     }
 
     // Also listen for pageshow event (when navigating back via browser back button)
     const handlePageShow = (e: PageTransitionEvent) => {
-      // If page was loaded from cache (back/forward navigation), refetch
       if (e.persisted) {
         console.log('📄 Page shown from cache, refetching meals...')
         setTimeout(() => {
-          refetchMeals()
-        }, 200)
+          if (refetchMeals) refetchMeals()
+        }, 300)
       }
     }
 
@@ -352,48 +667,172 @@ export default function DashboardPage() {
     document.addEventListener('visibilitychange', handleVisibilityChange)
     window.addEventListener('pageshow', handlePageShow)
     
+    // Listen for meal saved events from upload page (works in same tab and other tabs)
+    const handleStorageChange = (e: StorageEvent) => {
+      if (e.key === 'meal-saved' && e.newValue) {
+        console.log('📢 Storage event: Meal saved, refetching...')
+        if (refetchMeals) {
+          // Add small delay to ensure database commit is complete
+          setTimeout(() => {
+            refetchMeals()
+          }, 500)
+        }
+      }
+    }
+
+    // Listen for BroadcastChannel messages (primary method - works in same tab)
+    let broadcastChannel: BroadcastChannel | null = null
+    try {
+      broadcastChannel = new BroadcastChannel('meal-updates')
+      broadcastChannel.onmessage = (event) => {
+        if (event.data?.type === 'MEAL_SAVED') {
+          console.log('📢 BroadcastChannel: Meal saved, refetching...', {
+            mealId: event.data.mealId,
+            calories: event.data.calories,
+            macros: event.data.macros
+          })
+          // Add small delay to ensure database commit is complete
+          if (refetchMeals) {
+            console.log('🔄 Calling refetchMeals from BroadcastChannel...')
+            setTimeout(() => {
+              refetchMeals()
+            }, 1000) // Wait 1 second for database commit
+          } else {
+            console.error('❌ refetchMeals is not available!')
+          }
+        }
+      }
+    } catch (e) {
+      // BroadcastChannel not supported, will use storage events only
+      console.warn('⚠️ BroadcastChannel not supported, using storage events only')
+    }
+
+    window.addEventListener('storage', handleStorageChange)
+    
+    // Polling fallback: refetch every 5 seconds if page is visible
+    // This ensures updates even if real-time subscription fails
+    const pollInterval = setInterval(() => {
+      if (document.visibilityState === 'visible' && refetchMeals) {
+        refetchMeals()
+      }
+    }, 5000) // Poll every 5 seconds
+    
     return () => {
+      clearTimeout(timeoutId)
       window.removeEventListener('focus', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('pageshow', handlePageShow)
+      window.removeEventListener('storage', handleStorageChange)
+      if (broadcastChannel) {
+        broadcastChannel.close()
+      }
+      clearInterval(pollInterval)
     }
-  }, [user])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user, refetchMeals])
 
-  // Filter meals for current period
+  // Debug: Log when allMeals changes
+  useEffect(() => {
+    console.log('📊 ========== allMeals STATE CHANGED ==========')
+    console.log('📊 allMeals state changed:', {
+      count: allMeals.length,
+      meals: allMeals.map(m => ({ 
+        id: m.id, 
+        food: m.foodName, 
+        calories: m.calories,
+        macros: m.macros,
+        date: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+      }))
+    })
+    console.log('📊 This should trigger filteredMeals to recalculate')
+  }, [allMeals])
+
+  // Filter meals for current period - recalculates when allMeals or period changes
   const filteredMeals = useMemo(() => {
+    console.log('🔄 ========== FILTERING MEALS (useMemo triggered) ==========')
+    console.log('🔄 Filtering meals - period:', period, 'total meals:', allMeals.length)
+    console.log('🔄 allMeals array reference changed:', allMeals.length, 'meals')
+    
     if (period === "daily") {
-      // Get today's date in LOCAL timezone
+      // SIMPLE APPROACH: Get today's date and compare using date components
       const now = new Date()
-      const todayLocal = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0)
-      const todayYear = todayLocal.getFullYear()
-      const todayMonth = todayLocal.getMonth()
-      const todayDay = todayLocal.getDate()
-      
-      // Use string-based date comparison
+      const todayYear = now.getFullYear()
+      const todayMonth = now.getMonth()
+      const todayDay = now.getDate()
       const todayDateStr = `${todayYear}-${String(todayMonth + 1).padStart(2, '0')}-${String(todayDay).padStart(2, '0')}`
       
-      const filtered = allMeals.filter((meal) => {
-        // Parse meal date
-        let mealDate: Date
-        if (meal.createdAt instanceof Date) {
-          mealDate = new Date(meal.createdAt.getTime())
-        } else if (typeof meal.createdAt === 'string') {
-          mealDate = new Date(meal.createdAt)
-        } else {
-          mealDate = new Date()
-        }
-        
-        // Convert to LOCAL date components
-        const mealYear = mealDate.getFullYear()
-        const mealMonth = mealDate.getMonth()
-        const mealDay = mealDate.getDate()
-        
-        // Create date string for comparison
-        const mealDateStr = `${mealYear}-${String(mealMonth + 1).padStart(2, '0')}-${String(mealDay).padStart(2, '0')}`
-        
-        // Compare date strings
-        return mealDateStr === todayDateStr
+      console.log('📅 Filtering for today:', {
+        date: todayDateStr,
+        localTime: now.toLocaleString()
       })
+      
+      // Simple filter: compare year, month, day
+      const filtered = allMeals.filter((meal) => {
+        try {
+          const mealDate = meal.createdAt instanceof Date 
+            ? meal.createdAt 
+            : new Date(meal.createdAt)
+          
+          if (isNaN(mealDate.getTime())) {
+            return false
+          }
+          
+          // Simple comparison: same year, month, day = today
+          const isToday = 
+            mealDate.getFullYear() === todayYear &&
+            mealDate.getMonth() === todayMonth &&
+            mealDate.getDate() === todayDay
+          
+          return isToday
+        } catch (err) {
+          console.error('❌ Error filtering meal:', err, meal)
+          return false
+        }
+      })
+      
+      // Calculate totals for verification
+      const totalCalories = filtered.reduce((sum, m) => sum + (m.calories || 0), 0)
+      const totalProtein = filtered.reduce((sum, m) => sum + (m.macros?.protein || 0), 0)
+      const totalCarbs = filtered.reduce((sum, m) => sum + (m.macros?.carbs || 0), 0)
+      const totalFat = filtered.reduce((sum, m) => sum + (m.macros?.fat || 0), 0)
+      
+      console.log(`📊 ========== FILTERING SUMMARY ==========`)
+      console.log(`📊 Filtered ${filtered.length} meals for today out of ${allMeals.length} total`)
+      console.log(`📊 Today's date string: ${todayDateStr}`)
+      console.log(`📊 Filtered totals:`, {
+        calories: totalCalories,
+        protein: totalProtein,
+        carbs: totalCarbs,
+        fat: totalFat
+      })
+      
+      if (filtered.length > 0) {
+        console.log(`💯 Today's meals:`, filtered.map(m => ({ 
+          food: m.foodName, 
+          calories: m.calories,
+          date: (() => {
+            const d = m.createdAt instanceof Date ? m.createdAt : new Date(m.createdAt)
+            return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+          })()
+        })))
+      } else {
+        console.log('⚠️ No meals found for today')
+        if (allMeals.length > 0) {
+          console.log('   All meals dates (showing why they were excluded):', allMeals.map(m => {
+            const d = m.createdAt instanceof Date ? m.createdAt : new Date(m.createdAt)
+            const mealDateStr = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+            return {
+              food: m.foodName,
+              calories: m.calories,
+              createdAt: m.createdAt,
+              dateStr: mealDateStr,
+              todayDateStr: todayDateStr,
+              matches: mealDateStr === todayDateStr,
+              local: d.toLocaleString()
+            }
+          }))
+        }
+      }
       
       return filtered
     } else {
@@ -464,6 +903,29 @@ export default function DashboardPage() {
               </p>
             </div>
             <div className="flex gap-4 items-center">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  console.log('🔄 Manual refresh button clicked')
+                  if (refetchMeals) {
+                    setLoadingMeals(true)
+                    refetchMeals().catch(err => {
+                      console.error('❌ Error in manual refetch:', err)
+                      setLoadingMeals(false)
+                    })
+                  }
+                }}
+                disabled={loadingMeals}
+              >
+                {loadingMeals ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Refreshing...
+                  </>
+                ) : (
+                  '🔄 Refresh'
+                )}
+              </Button>
               <TimePeriodToggle period={period} onPeriodChange={setPeriod} />
               <Link href="/upload">
                 <Button size="lg">
@@ -478,7 +940,14 @@ export default function DashboardPage() {
           <LoginStreakCard streak={loginStreak} totalDays={totalDaysLoggedIn} />
 
           {/* View Content */}
-          {period === "daily" && <DailyView meals={filteredMeals} profile={profile} />}
+          {period === "daily" && profile && (
+            <DailyView 
+              key={`daily-${refetchKey}-${filteredMeals.length}-${filteredMeals.map(m => m.id).join('-')}`} 
+              meals={filteredMeals} 
+              profile={profile}
+              dailySummary={dailySummary}
+            />
+          )}
           {period === "weekly" && weekData && (
             <WeeklyView
               weekData={weekData}
@@ -498,3 +967,4 @@ export default function DashboardPage() {
     </div>
   )
 }
+

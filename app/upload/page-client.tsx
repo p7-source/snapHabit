@@ -22,7 +22,6 @@ export default function UploadPageClient() {
   const [adjustedAnalysis, setAdjustedAnalysis] = useState<MealAnalysis | null>(null)
   const [portionMultiplier, setPortionMultiplier] = useState(1)
   const [error, setError] = useState("")
-  const [savedMeal, setSavedMeal] = useState<MealAnalysis | null>(null)
   const router = useRouter()
 
   useEffect(() => {
@@ -55,7 +54,6 @@ export default function UploadPageClient() {
     setAdjustedAnalysis(null)
     setPortionMultiplier(1)
     setError("")
-    setSavedMeal(null)
   }
 
   const handleUploadNext = () => {
@@ -65,7 +63,6 @@ export default function UploadPageClient() {
     setAdjustedAnalysis(null)
     setPortionMultiplier(1)
     setError("")
-    setSavedMeal(null)
     setUploadProgress("")
   }
 
@@ -117,6 +114,17 @@ export default function UploadPageClient() {
   }
 
   const handleSave = async () => {
+    console.log("💾 ========== HANDLE SAVE CALLED ==========")
+    console.log("💾 Checking prerequisites...", {
+      hasImage: !!selectedImage,
+      hasAnalysis: !!adjustedAnalysis,
+      hasUser: !!user,
+      imageName: selectedImage?.name,
+      imageSize: selectedImage?.size,
+      foodName: adjustedAnalysis?.foodName,
+      userId: user?.id
+    })
+    
     if (!selectedImage || !adjustedAnalysis || !user) {
       console.error("❌ Cannot save: missing required data", {
         hasImage: !!selectedImage,
@@ -126,20 +134,26 @@ export default function UploadPageClient() {
       return
     }
 
+    console.log("✅ All prerequisites met, starting save process...")
     setSaving(true)
     setError("")
     
     try {
       // Step 1: Compress image (only if larger than 1MB)
+      console.log("📦 Step 1: Preparing image for upload...")
       let imageToUpload = selectedImage
       if (selectedImage.size > 1024 * 1024) {
+        console.log("📦 Image is larger than 1MB, compressing...")
         setUploadProgress("Compressing image...")
         imageToUpload = await compressImage(selectedImage, 1920, 0.85)
         const originalSize = (selectedImage.size / 1024 / 1024).toFixed(2)
         const compressedSize = (imageToUpload.size / 1024 / 1024).toFixed(2)
-        console.log(`Image compressed: ${originalSize}MB → ${compressedSize}MB`)
+        console.log(`✅ Image compressed: ${originalSize}MB → ${compressedSize}MB`)
+      } else {
+        console.log("📦 Image is under 1MB, no compression needed")
       }
 
+      console.log("📤 Step 2: Starting image upload to Supabase Storage...")
       setUploadProgress("Uploading image...")
 
       // Step 2: Upload image to Supabase Storage
@@ -207,30 +221,48 @@ export default function UploadPageClient() {
       }
       
       console.log("✅ Image uploaded successfully to Supabase Storage")
+      console.log("   Upload data:", JSON.stringify(uploadData, null, 2))
+      console.log("   Storage path:", storagePath)
       
-      setUploadProgress("Getting image URL...")
-      
-      // Get public URL (or signed URL if bucket is private)
-      const { data: urlData } = supabase.storage
-        .from('meal-images')
-        .getPublicUrl(storagePath)
-      
-      const imageUrl = urlData.publicUrl
-
       setUploadProgress("Saving meal data...")
       
       // Step 3: Save meal entry to Supabase database
+      console.log("💾 Step 3: Saving meal to database...")
+      // Store the storage path instead of a public URL for privacy
+      // Signed URLs will be generated when displaying images
+      
+      // Ensure macros are properly formatted as numbers
+      const macrosToSave = {
+        protein: typeof adjustedAnalysis.macros.protein === 'number' 
+          ? adjustedAnalysis.macros.protein 
+          : Number(adjustedAnalysis.macros.protein) || 0,
+        carbs: typeof adjustedAnalysis.macros.carbs === 'number' 
+          ? adjustedAnalysis.macros.carbs 
+          : Number(adjustedAnalysis.macros.carbs) || 0,
+        fat: typeof adjustedAnalysis.macros.fat === 'number' 
+          ? adjustedAnalysis.macros.fat 
+          : Number(adjustedAnalysis.macros.fat) || 0,
+      }
+      
       const mealDoc = {
         user_id: user.id,
-        image_url: imageUrl,
+        image_url: storagePath, // Store path, not public URL
         food_name: adjustedAnalysis.foodName,
-        calories: adjustedAnalysis.calories,
-        macros: adjustedAnalysis.macros,
-        ai_advice: adjustedAnalysis.aiAdvice,
+        calories: typeof adjustedAnalysis.calories === 'number' 
+          ? adjustedAnalysis.calories 
+          : Number(adjustedAnalysis.calories) || 0,
+        macros: macrosToSave,
+        ai_advice: adjustedAnalysis.aiAdvice || "",
       }
       
       console.log("💾 Saving meal to database...")
+      console.log("   Original macros:", adjustedAnalysis.macros)
+      console.log("   Processed macros:", macrosToSave)
       console.log("   Meal document:", JSON.stringify(mealDoc, null, 2))
+      
+      console.log("💾 Attempting database insert...")
+      console.log("   Table: meals")
+      console.log("   Document to insert:", JSON.stringify(mealDoc, null, 2))
       
       const { data: mealData, error: dbError } = await supabase
         .from('meals')
@@ -238,12 +270,27 @@ export default function UploadPageClient() {
         .select()
         .single()
       
+      console.log("💾 Database insert response:", {
+        hasData: !!mealData,
+        hasError: !!dbError,
+        data: mealData,
+        error: dbError
+      })
+      
       if (dbError) {
         console.error("❌ Database error:", dbError)
         console.error("   Error code:", dbError.code)
         console.error("   Error message:", dbError.message)
         console.error("   Error details:", dbError.details)
+        console.error("   Error hint:", dbError.hint)
+        console.error("   Full error object:", JSON.stringify(dbError, null, 2))
         throw new Error(`Failed to save meal: ${dbError.message}`)
+      }
+      
+      if (!mealData) {
+        console.error("❌ No data returned from database insert")
+        console.error("   This means the insert might have failed silently")
+        throw new Error("Database insert succeeded but no data returned")
       }
 
       console.log("✅ Meal saved successfully to database!")
@@ -252,11 +299,57 @@ export default function UploadPageClient() {
       console.log("   Meal created_at:", mealData?.created_at)
       console.log("   Meal calories:", mealData?.calories)
       console.log("   Meal macros:", mealData?.macros)
-
-      // Store saved meal for success display
-      setSavedMeal(adjustedAnalysis)
+      console.log("   Meal image_url:", mealData?.image_url)
+      console.log("   Meal food_name:", mealData?.food_name)
       
-      // Clear form state but keep saved meal for display
+      // Verify the meal was actually saved by querying it back
+      console.log("🔍 Verifying meal was saved...")
+      const verifyResult = await supabase
+        .from('meals')
+        .select('*')
+        .eq('id', mealData.id)
+        .single()
+      
+      if (verifyResult.error) {
+        console.error("❌ Verification failed - meal not found in database!")
+        console.error("   Error:", verifyResult.error)
+      } else {
+        console.log("✅ Verification passed - meal exists in database")
+        console.log("   Verified meal:", JSON.stringify(verifyResult.data, null, 2))
+      }
+      
+      console.log("✅ ========== SAVE PROCESS COMPLETE ==========")
+
+      // Notify dashboard to refetch immediately (works across tabs/pages and same tab)
+      if (typeof window !== 'undefined') {
+        // Use BroadcastChannel for same-origin communication (works in same tab and other tabs)
+        try {
+          const channel = new BroadcastChannel('meal-updates')
+          channel.postMessage({ 
+            type: 'MEAL_SAVED', 
+            mealId: mealData?.id, 
+            timestamp: Date.now(),
+            calories: mealData?.calories,
+            macros: mealData?.macros
+          })
+          // Don't close immediately - let dashboard receive it first
+          setTimeout(() => channel.close(), 100)
+        } catch (e) {
+          // BroadcastChannel not supported, fallback to localStorage
+        }
+        
+        // Also use localStorage event to notify other tabs
+        localStorage.setItem('meal-saved', JSON.stringify({
+          timestamp: Date.now(),
+          mealId: mealData?.id
+        }))
+        // Remove it after a short delay to allow event to fire
+        setTimeout(() => {
+          localStorage.removeItem('meal-saved')
+        }, 100)
+      }
+
+      // Clear form state
       setSelectedImage(null)
       setAnalysis(null)
       setAdjustedAnalysis(null)
@@ -265,21 +358,31 @@ export default function UploadPageClient() {
       setSaving(false)
       
       console.log("✅ Upload flow completed successfully!")
+      
+      // Immediately redirect to dashboard with full page reload to ensure fresh data
+      window.location.href = `/dashboard?refetch=${Date.now()}`
     } catch (err) {
+      console.error("❌ ========== SAVE ERROR ==========")
       console.error("❌ Save error:", err)
+      console.error("❌ Error type:", err instanceof Error ? err.constructor.name : typeof err)
+      console.error("❌ Error message:", err instanceof Error ? err.message : String(err))
+      console.error("❌ Error stack:", err instanceof Error ? err.stack : "No stack trace")
       
       // Check if error is due to authentication
       if (err instanceof Error && (err.message.includes("auth") || err.message.includes("permission"))) {
+        console.error("❌ Authentication error detected")
         setError("Authentication error. Please sign in again.")
         router.push("/login")
       } else {
         const errorMessage = err instanceof Error ? err.message : "Failed to save meal. Please try again."
+        console.error("❌ Setting error message:", errorMessage)
         setError(errorMessage)
       }
       
       // Always clear progress and reset saving state
       setUploadProgress("")
       setSaving(false)
+      console.error("❌ ========== ERROR HANDLING COMPLETE ==========")
     }
   }
 
@@ -328,65 +431,7 @@ export default function UploadPageClient() {
           </div>
         )}
 
-        {/* Success Message */}
-        {savedMeal && !saving && (
-          <div className="mb-6 p-6 bg-green-50 dark:bg-green-950 border border-green-200 dark:border-green-800 rounded-lg">
-            <div className="flex items-start gap-4">
-              <div className="flex-shrink-0">
-                <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center">
-                  <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                  </svg>
-                </div>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-green-900 dark:text-green-100 mb-2">
-                  Meal Saved Successfully! 🎉
-                </h3>
-                <p className="text-sm text-green-800 dark:text-green-200 mb-4">
-                  <strong>{savedMeal.foodName}</strong> has been saved to your dashboard.
-                </p>
-                <div className="grid grid-cols-4 gap-4 mb-4 p-3 bg-white dark:bg-gray-900 rounded-md">
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Calories</p>
-                    <p className="text-sm font-semibold">{savedMeal.calories} kcal</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Protein</p>
-                    <p className="text-sm font-semibold">{savedMeal.macros.protein}g</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Carbs</p>
-                    <p className="text-sm font-semibold">{savedMeal.macros.carbs}g</p>
-                  </div>
-                  <div>
-                    <p className="text-xs text-muted-foreground mb-1">Fats</p>
-                    <p className="text-sm font-semibold">{savedMeal.macros.fat}g</p>
-                  </div>
-                </div>
-                <div className="flex gap-3">
-                  <Button onClick={handleUploadNext} className="flex-1">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Upload Next Meal
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    className="flex-1"
-                    onClick={() => {
-                      // Force full page reload to ensure dashboard refetches data
-                      window.location.href = `/dashboard?refetch=${Date.now()}`
-                    }}
-                  >
-                    View Dashboard
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {!savedMeal && (
-          <div className="grid gap-6 md:grid-cols-2">
+        <div className="grid gap-6 md:grid-cols-2">
           {/* Image Upload Section */}
           <Card>
             <CardHeader>
@@ -520,10 +565,87 @@ export default function UploadPageClient() {
 
                   {/* Save Button */}
                   <Button
-                    onClick={handleSave}
+                    onClick={async (e) => {
+                      try {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        
+                        // Force immediate log
+                        console.log("🖱️ ========== SAVE BUTTON CLICKED ==========")
+                        console.log("   Saving state:", saving)
+                        console.log("   Selected image:", !!selectedImage, selectedImage?.name)
+                        console.log("   Adjusted analysis:", !!adjustedAnalysis, adjustedAnalysis?.foodName)
+                        console.log("   User:", !!user, user?.id)
+                        console.log("   handleSave function exists:", typeof handleSave === 'function')
+                        
+                        if (saving) {
+                          console.log("⚠️ Save already in progress, ignoring click")
+                          return
+                        }
+                        
+                        if (!selectedImage) {
+                          console.error("❌ No image selected!")
+                          setError("Please select an image first")
+                          return
+                        }
+                        
+                        if (!adjustedAnalysis) {
+                          console.error("❌ No analysis data!")
+                          setError("Please analyze the food first")
+                          return
+                        }
+                        
+                        if (!user) {
+                          console.error("❌ No user!")
+                          setError("Not logged in. Please log in again.")
+                          router.push("/login")
+                          return
+                        }
+                        
+                        console.log("✅ All checks passed, calling handleSave...")
+                        console.log("   handleSave type:", typeof handleSave)
+                        
+                        if (typeof handleSave !== 'function') {
+                          console.error("❌ handleSave is not a function!")
+                          setError("Internal error: Save function not available")
+                          return
+                        }
+                        
+                        // Call handleSave and ensure it runs
+                        console.log("   About to call handleSave()...")
+                        try {
+                          const result = handleSave()
+                          console.log("   handleSave() called, returned:", result)
+                          
+                          // Handle promise if it returns one
+                          if (result && typeof result.then === 'function') {
+                            console.log("   handleSave returned a promise, waiting...")
+                            result
+                              .then(() => {
+                                console.log("   ✅ handleSave promise resolved")
+                              })
+                              .catch((err: any) => {
+                                console.error("❌ Error in handleSave promise:", err)
+                                console.error("   Error stack:", err?.stack)
+                                setError(err?.message || "Failed to save meal")
+                              })
+                          } else {
+                            console.log("   handleSave did not return a promise")
+                          }
+                        } catch (err) {
+                          console.error("❌ Exception calling handleSave:", err)
+                          console.error("   Error:", err instanceof Error ? err.message : String(err))
+                          setError(err instanceof Error ? err.message : "Failed to save meal")
+                        }
+                      } catch (err) {
+                        console.error("❌ Exception in button onClick:", err)
+                        window.alert(`Exception: ${err instanceof Error ? err.message : String(err)}`)
+                      }
+                    }}
                     disabled={saving}
                     className="w-full"
                     size="lg"
+                    type="button"
                   >
                     {saving ? (
                       <>
@@ -539,7 +661,6 @@ export default function UploadPageClient() {
             </CardContent>
           </Card>
         </div>
-        )}
       </main>
     </div>
   )

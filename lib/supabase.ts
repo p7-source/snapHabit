@@ -15,7 +15,15 @@ let supabase: SupabaseClient | undefined
 
 if (typeof window !== 'undefined') {
   // Use createBrowserClient from @supabase/ssr to ensure cookies are used
-  supabase = createBrowserClient(supabaseUrl, supabaseAnonKey)
+  supabase = createBrowserClient(supabaseUrl, supabaseAnonKey, {
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      detectSessionInUrl: true,
+      // Suppress token refresh errors - they're handled automatically
+      flowType: 'pkce'
+    }
+  })
 }
 
 // Export Supabase client
