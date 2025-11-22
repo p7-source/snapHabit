@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { useSupabaseAuth } from "@/lib/use-supabase-auth"
+import { useClerkAuth } from "@/lib/use-clerk-auth"
 import { saveUserProfile } from "@/lib/user-profile"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -25,7 +25,7 @@ import {
 type Step = 1 | 2 | 3
 
 export default function OnboardingFlow() {
-  const [user, loading] = useSupabaseAuth()
+  const [user, loading] = useClerkAuth()
   const [step, setStep] = useState<Step>(1)
   const [saving, setSaving] = useState(false)
   const router = useRouter()
@@ -139,13 +139,30 @@ export default function OnboardingFlow() {
 
       const success = await saveUserProfile(profile)
       if (success) {
-        router.push("/dashboard")
+        // Record daily login and initialize daily summary for new user
+        try {
+          console.log('🔄 Recording daily login for new user...')
+          const { recordDailyLogin } = await import("@/lib/daily-logins")
+          await recordDailyLogin(user.id)
+          console.log('✅ Daily login recorded and summary initialized')
+        } catch (err) {
+          // Don't block onboarding if daily login recording fails
+          console.warn("⚠️ Failed to record daily login:", err)
+        }
+        
+        router.push("/pricing")
       } else {
-        alert("Failed to save profile. Please try again.")
+        console.error("❌ Profile save failed. Check browser console for details.")
+        alert("Failed to save profile. Please check the browser console for details and try again.")
       }
     } catch (error) {
-      console.error("Error saving profile:", error)
-      alert("Failed to save profile. Please try again.")
+      console.error("❌ Exception saving profile:", error)
+      if (error instanceof Error) {
+        console.error("   Error message:", error.message)
+        alert(`Failed to save profile: ${error.message}. Please check the console for details.`)
+      } else {
+        alert("Failed to save profile. Please check the browser console for details.")
+      }
     } finally {
       setSaving(false)
     }

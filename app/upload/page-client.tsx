@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
-import { useSupabaseAuth } from "@/lib/use-supabase-auth"
+import { useClerkAuth } from "@/lib/use-clerk-auth"
 import { getSupabaseClient } from "@/lib/supabase"
 import ImageUpload from "@/components/upload/ImageUpload"
 import { Button } from "@/components/ui/button"
@@ -13,7 +13,7 @@ import { Loader2, TrendingUp, Sparkles, Plus } from "lucide-react"
 import { compressImage } from "@/lib/image-compress"
 
 export default function UploadPageClient() {
-  const [user, loading] = useSupabaseAuth()
+  const [user, loading] = useClerkAuth()
   const [selectedImage, setSelectedImage] = useState<File | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -244,6 +244,11 @@ export default function UploadPageClient() {
           : Number(adjustedAnalysis.macros.fat) || 0,
       }
       
+      // Calculate date in local timezone (YYYY-MM-DD format)
+      // This ensures the date matches what the user sees as "today"
+      const today = new Date()
+      const localDateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
+      
       const mealDoc = {
         user_id: user.id,
         image_url: storagePath, // Store path, not public URL
@@ -253,6 +258,7 @@ export default function UploadPageClient() {
           : Number(adjustedAnalysis.calories) || 0,
         macros: macrosToSave,
         ai_advice: adjustedAnalysis.aiAdvice || "",
+        date: localDateStr, // Store date in local timezone to match user's "today"
       }
       
       console.log("💾 Saving meal to database...")

@@ -77,3 +77,6 @@ coverage/
 *.pem
 *.key
 .env.example
+
+# clerk configuration (can include secrets)
+/.clerk/

@@ -12,6 +12,7 @@ export interface Meal {
   }
   aiAdvice: string
   createdAt: Date
+  date?: string // Date in YYYY-MM-DD format (from meals.date column)
 }
 
 export interface MealAnalysis {

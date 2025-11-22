@@ -2,7 +2,8 @@
 
 import { useEffect, useState, useMemo, useCallback } from "react"
 import { useRouter } from "next/navigation"
-import { useSupabaseAuth } from "@/lib/use-supabase-auth"
+import { useClerkAuth } from "@/lib/use-clerk-auth"
+import { useClerk } from "@clerk/nextjs"
 import { getSupabaseClient } from "@/lib/supabase"
 import { Meal } from "@/types/meal"
 import { UserProfile } from "@/types/user"
@@ -14,6 +15,7 @@ import { TimePeriod, getStartOfDay, getStartOfWeek, isSameDay } from "@/lib/date
 import { processWeekData, processMonthData } from "@/lib/meal-helpers"
 import { getImageUrl } from "@/lib/image-url"
 import { getTodaySummary } from "@/lib/daily-summaries"
+import { useSubscription } from "@/lib/use-subscription"
 import TimePeriodToggle from "@/components/dashboard/TimePeriodToggle"
 import DailyView from "@/components/dashboard/DailyView"
 import WeeklyView from "@/components/dashboard/WeeklyView"
@@ -21,7 +23,9 @@ import MonthlyView from "@/components/dashboard/MonthlyView"
 import LoginStreakCard from "@/components/dashboard/LoginStreakCard"
 
 export default function DashboardPage() {
-  const [user, loading] = useSupabaseAuth()
+  const [user, loading] = useClerkAuth()
+  const { signOut } = useClerk()
+  const { isActive: hasActiveSubscription, loading: subscriptionLoading } = useSubscription()
   const [allMeals, setAllMeals] = useState<Meal[]>([])
   const [loadingMeals, setLoadingMeals] = useState(true)
   const [refetchKey, setRefetchKey] = useState(0) // Force re-render when meals update
@@ -85,15 +89,30 @@ export default function DashboardPage() {
     
     console.log('🔄 ========== REFETCHING MEALS ==========')
     console.log('🔄 User ID:', user.id)
+    console.log('🔄 User ID type:', typeof user.id)
     console.log('🔄 Current allMeals count:', allMeals.length)
+    
+    setLoadingMeals(true)
     
     // Fetch daily summary FIRST (from pre-calculated table)
     await fetchDailySummary()
     
     const supabase = getSupabaseClient()
     
+    if (!supabase) {
+      console.error('❌ Supabase client is null!')
+      setAllMeals([])
+      setLoadingMeals(false)
+      return
+    }
+    
     // Fetch ALL meals (needed for weekly/monthly views and meal list display)
     console.log('📡 Fetching meals from database...')
+    console.log('📡 Query parameters:', {
+      user_id: user.id,
+      user_id_type: typeof user.id
+    })
+    
     const { data, error } = await supabase
       .from('meals')
       .select('*')
@@ -104,6 +123,8 @@ export default function DashboardPage() {
       console.error('❌ Error refetching meals:', error)
       console.error('   Error code:', error.code)
       console.error('   Error message:', error.message)
+      console.error('   Error details:', error.details)
+      console.error('   Error hint:', error.hint)
       setAllMeals([])
       setLoadingMeals(false)
       return
@@ -159,6 +180,7 @@ export default function DashboardPage() {
             macros: parsedMacros,
             aiAdvice: meal.ai_advice || "",
             createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
+            date: meal.date || undefined, // Include date column from database
           }
           
           // Log macro data for verification
@@ -233,14 +255,22 @@ export default function DashboardPage() {
         food: m.foodName,
         calories: m.calories,
         macros: m.macros,
-        date: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+        date: m.date || 'NO DATE FIELD',
+        createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
       })))
       
-      // CRITICAL: Force state update - use functional update to ensure React detects change
-      setAllMeals(() => {
-        console.log('💾 setAllMeals called with', newMeals.length, 'meals')
-        return newMeals
-      })
+      // CRITICAL: Force state update - ALWAYS create new array reference
+      console.log('💾 ========== FORCING STATE UPDATE ==========')
+      console.log('💾 Current state has', allMeals.length, 'meals')
+      console.log('💾 New data has', newMeals.length, 'meals')
+      
+      // CRITICAL: Always create completely new array to force React update
+      const mealsToSet = JSON.parse(JSON.stringify(newMeals)) // Deep clone to ensure new reference
+      console.log('💾 Created deep clone with', mealsToSet.length, 'meals')
+      
+      // Use direct assignment - React will detect the new array reference
+      setAllMeals(mealsToSet)
+      console.log('💾 setAllMeals called - state updated')
       
       // Force DailyView to re-render by updating key
       setRefetchKey(prev => {
@@ -251,6 +281,13 @@ export default function DashboardPage() {
       
       setLoadingMeals(false)
       
+      // Force a small delay then verify state was updated
+      setTimeout(() => {
+        console.log('✅ State update verification - allMeals should now have', mealsToSet.length, 'meals')
+        console.log('✅ Filtered meals useMemo should recalculate now')
+        console.log('✅ DailyView should re-render with new key')
+      }, 100)
+      
       console.log('✅ State update complete')
       console.log('✅ allMeals state set to', newMeals.length, 'meals')
       console.log('✅ This WILL trigger filteredMeals useMemo to recalculate')
@@ -258,7 +295,9 @@ export default function DashboardPage() {
     } else {
       console.log('⚠️ No meals data returned from refetch')
       console.log('   Data value:', data)
-      console.log('   Error value:', error)
+      console.log('   Data is null:', data === null)
+      console.log('   Data is undefined:', data === undefined)
+      console.log('   Data type:', typeof data)
       setAllMeals([])
       setLoadingMeals(false)
     }
@@ -288,17 +327,112 @@ export default function DashboardPage() {
       console.log('✅ User found, initializing dashboard for user:', user.id)
       console.log('✅ Starting dashboard initialization...')
       
+      // Check subscription status
+      // IMPORTANT: Skip this check if we just completed checkout (session_id was present)
+      // The session_id handler above will manage the subscription check in that case
+      const urlParamsCheck = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+      const hasSessionId = urlParamsCheck?.get('session_id')
+      
+      // Only check subscription if we're not in the middle of processing a checkout
+      if (!hasSessionId && !subscriptionLoading) {
+        if (!hasActiveSubscription) {
+          console.log('⚠️ No active subscription, redirecting to pricing')
+          router.push("/pricing")
+          return
+        }
+        console.log('✅ Active subscription found')
+      } else if (hasSessionId) {
+        console.log('⏳ Processing checkout completion, skipping subscription check...')
+      }
+      
       // Fetch user profile
       console.log('👤 Fetching user profile...')
-      getUserProfile(user.id).then((userProfile) => {
-        setProfile(userProfile)
-        setLoadingProfile(false)
-        
-        // Redirect to onboarding if profile doesn't exist
-        if (!userProfile) {
-          router.push("/onboarding")
+      void (async () => {
+        try {
+          const userProfile = await getUserProfile(user.id)
+          setProfile(userProfile)
+          setLoadingProfile(false)
+          
+          // Redirect to onboarding if profile doesn't exist
+          if (!userProfile) {
+            router.push("/onboarding")
+          }
+        } catch (error) {
+          console.error("Error fetching user profile:", error)
+          setLoadingProfile(false)
         }
-      })
+      })()
+      
+      // Record daily login and initialize daily summary (if not already done)
+      // This ensures daily_summaries has an entry for today
+      void (async () => {
+        try {
+          const { recordDailyLogin } = await import("@/lib/daily-logins")
+          await recordDailyLogin(user.id)
+        } catch (err) {
+          // Don't block dashboard if daily login recording fails
+          console.warn("⚠️ Failed to record daily login:", err)
+        }
+      })()
+      
+      // Check for successful checkout (session_id in URL)
+      // Per Stripe docs: https://docs.stripe.com/api/checkout/sessions/object#checkout_session_object-success_url
+      const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+      const sessionId = urlParams?.get('session_id')
+      
+      if (sessionId) {
+        console.log('✅ Checkout session completed, session_id:', sessionId)
+        console.log('   Payment successful! Waiting for webhook to process...')
+        
+        // Remove session_id from URL for cleaner URL
+        if (typeof window !== 'undefined') {
+          urlParams?.delete('session_id')
+          const newUrl = window.location.pathname + (urlParams?.toString() ? '?' + urlParams.toString() : '')
+          window.history.replaceState({}, '', newUrl)
+        }
+        
+        // IMPORTANT: Skip subscription check and wait for webhook
+        // The webhook will update the subscription in Supabase
+        // We'll wait longer to ensure webhook processes (up to 5 seconds)
+        let attempts = 0
+        const maxAttempts = 10
+        const checkSubscription = async () => {
+          attempts++
+          console.log(`🔄 Checking subscription status (attempt ${attempts}/${maxAttempts})...`)
+          
+          try {
+            // Force refresh subscription status
+            const { getSubscription, isSubscriptionActive } = await import('@/lib/stripe')
+            const sub = await getSubscription(user.id)
+            
+            if (isSubscriptionActive(sub)) {
+              console.log('✅ Subscription is now active!')
+              // Reload to show dashboard with subscription
+              window.location.reload()
+              return
+            } else if (attempts < maxAttempts) {
+              // Wait 500ms and check again
+              setTimeout(checkSubscription, 500)
+            } else {
+              console.log('⚠️ Subscription not active yet, but payment was successful')
+              console.log('   Webhook may still be processing. Reloading anyway...')
+              window.location.reload()
+            }
+          } catch (error) {
+            console.error('❌ Error checking subscription:', error)
+            if (attempts < maxAttempts) {
+              setTimeout(checkSubscription, 500)
+            } else {
+              // Final reload after max attempts
+              window.location.reload()
+            }
+          }
+        }
+        
+        // Start checking after 1 second (give webhook time to process)
+        setTimeout(checkSubscription, 1000)
+        return // Skip the rest of the useEffect to prevent redirect to pricing
+      }
       
       // Fetch daily summary (from daily_summaries table)
       fetchDailySummary()
@@ -448,6 +582,7 @@ export default function DashboardPage() {
                 macros: parsedMacros,
                 aiAdvice: meal.ai_advice || "",
                 createdAt: meal.created_at ? new Date(meal.created_at) : new Date(),
+                date: meal.date || undefined, // Include date column from database
               }
               
               // Log macro parsing for debugging
@@ -522,6 +657,7 @@ export default function DashboardPage() {
       // Subscribe to real-time changes
       let channel: any = null
       try {
+        console.log('📡 Setting up real-time subscription for user:', user.id)
         channel = supabase
           .channel(`meals-changes-${user.id}`)
           .on(
@@ -530,7 +666,7 @@ export default function DashboardPage() {
               event: '*',
               schema: 'public',
               table: 'meals',
-              filter: `user_id=eq.${user.id}`,
+              filter: `user_id=eq.${user.id}`, // Works with TEXT user_id
             },
             (payload) => {
               const eventType = payload.eventType
@@ -587,30 +723,60 @@ export default function DashboardPage() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [user, loading, router])
+  }, [user, loading, subscriptionLoading, hasActiveSubscription, router])
 
   // ALWAYS refetch meals when page loads (especially after redirect from upload)
   useEffect(() => {
-    if (!user) return
+    if (!user) {
+      console.log('⏰ Auto-refetch useEffect: No user, skipping')
+      return
+    }
+
+    if (!refetchMeals) {
+      console.log('⏰ Auto-refetch useEffect: refetchMeals not available yet, waiting...')
+      return
+    }
+
+    // Check if we came from upload page
+    const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+    const cameFromUpload = urlParams?.has('refetch')
+    
+    console.log('⏰ Setting up auto-refetch...', {
+      cameFromUpload,
+      user: user.id
+    })
 
     // Clean up refetch parameter from URL
-    if (typeof window !== 'undefined') {
-      const urlParams = new URLSearchParams(window.location.search)
-      if (urlParams.has('refetch')) {
-        urlParams.delete('refetch')
-        const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '')
-        window.history.replaceState({}, '', newUrl)
-      }
+    if (typeof window !== 'undefined' && cameFromUpload) {
+      urlParams?.delete('refetch')
+      const newUrl = window.location.pathname + (urlParams?.toString() ? '?' + urlParams.toString() : '')
+      window.history.replaceState({}, '', newUrl)
     }
 
     // ALWAYS refetch after page loads - use multiple attempts to ensure it works
     console.log('⏰ Setting up auto-refetch (multiple attempts)...')
+    
+    // Store immediate refetch timeout for cleanup
+    let immediateTimeout: NodeJS.Timeout | null = null
+    
+    // Immediate refetch if coming from upload (database should be committed by now)
+    if (cameFromUpload) {
+      console.log('🔄 Immediate refetch (coming from upload)...')
+      immediateTimeout = setTimeout(() => {
+        if (refetchMeals && typeof refetchMeals === 'function') {
+          console.log('🔄 Executing immediate refetch...')
+          refetchMeals().catch(err => console.error('❌ Immediate refetch failed:', err))
+        }
+      }, 500) // Wait 500ms for page to fully load
+    }
     
     // Attempt 1: After 1 second
     const timeout1 = setTimeout(() => {
       console.log('🔄 Auto-refetch attempt 1 (1s delay)...')
       if (refetchMeals && typeof refetchMeals === 'function') {
         refetchMeals().catch(err => console.error('❌ Refetch attempt 1 failed:', err))
+      } else {
+        console.error('❌ refetchMeals not available for attempt 1')
       }
     }, 1000)
     
@@ -619,6 +785,8 @@ export default function DashboardPage() {
       console.log('🔄 Auto-refetch attempt 2 (2s delay)...')
       if (refetchMeals && typeof refetchMeals === 'function') {
         refetchMeals().catch(err => console.error('❌ Refetch attempt 2 failed:', err))
+      } else {
+        console.error('❌ refetchMeals not available for attempt 2')
       }
     }, 2000)
     
@@ -627,14 +795,10 @@ export default function DashboardPage() {
       console.log('🔄 Auto-refetch attempt 3 (3s delay)...')
       if (refetchMeals && typeof refetchMeals === 'function') {
         refetchMeals().catch(err => console.error('❌ Refetch attempt 3 failed:', err))
+      } else {
+        console.error('❌ refetchMeals not available for attempt 3')
       }
     }, 3000)
-    
-    return () => {
-      clearTimeout(timeout1)
-      clearTimeout(timeout2)
-      clearTimeout(timeout3)
-    }
 
     // Refetch when page becomes visible (e.g., user navigates back from upload)
     const handleFocus = () => {
@@ -718,7 +882,11 @@ export default function DashboardPage() {
     }, 5000) // Poll every 5 seconds
     
     return () => {
-      clearTimeout(timeoutId)
+      console.log('🧹 Cleaning up auto-refetch and event listeners...')
+      if (immediateTimeout) clearTimeout(immediateTimeout)
+      clearTimeout(timeout1)
+      clearTimeout(timeout2)
+      clearTimeout(timeout3)
       window.removeEventListener('focus', handleFocus)
       document.removeEventListener('visibilitychange', handleVisibilityChange)
       window.removeEventListener('pageshow', handlePageShow)
@@ -741,11 +909,31 @@ export default function DashboardPage() {
         food: m.foodName, 
         calories: m.calories,
         macros: m.macros,
-        date: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+        date: m.date || 'NO DATE FIELD',
+        createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
       }))
     })
     console.log('📊 This should trigger filteredMeals to recalculate')
   }, [allMeals])
+
+  // Force refetch on mount if we came from upload
+  useEffect(() => {
+    if (!user || !refetchMeals) return
+    
+    const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
+    if (urlParams?.has('refetch')) {
+      console.log('🔄 FORCE REFETCH: Detected refetch parameter, forcing immediate refetch...')
+      // Force refetch immediately
+      setTimeout(() => {
+        console.log('🔄 FORCE REFETCH: Executing now...')
+        refetchMeals().then(() => {
+          console.log('✅ FORCE REFETCH: Completed')
+        }).catch(err => {
+          console.error('❌ FORCE REFETCH: Failed', err)
+        })
+      }, 100)
+    }
+  }, [user, refetchMeals])
 
   // Filter meals for current period - recalculates when allMeals or period changes
   const filteredMeals = useMemo(() => {
@@ -754,7 +942,7 @@ export default function DashboardPage() {
     console.log('🔄 allMeals array reference changed:', allMeals.length, 'meals')
     
     if (period === "daily") {
-      // SIMPLE APPROACH: Get today's date and compare using date components
+      // Get today's date in YYYY-MM-DD format (local timezone)
       const now = new Date()
       const todayYear = now.getFullYear()
       const todayMonth = now.getMonth()
@@ -766,23 +954,37 @@ export default function DashboardPage() {
         localTime: now.toLocaleString()
       })
       
-      // Simple filter: compare year, month, day
+      // Filter: Use date column if available (more reliable), otherwise fall back to createdAt
+      console.log('📅 All meals before filtering:', allMeals.map(m => ({
+        food: m.foodName,
+        date: m.date || 'NO DATE',
+        createdAt: m.createdAt instanceof Date ? m.createdAt.toISOString() : m.createdAt
+      })))
+      
       const filtered = allMeals.filter((meal) => {
         try {
+          // PREFERRED: Use date column if available (matches database trigger logic)
+          if (meal.date) {
+            const isToday = meal.date === todayDateStr
+            console.log(`📅 Meal "${meal.foodName}": date="${meal.date}", today="${todayDateStr}", match=${isToday}`)
+            return isToday
+          }
+          
+          // FALLBACK: Use createdAt timestamp comparison (for meals without date column)
           const mealDate = meal.createdAt instanceof Date 
             ? meal.createdAt 
             : new Date(meal.createdAt)
           
           if (isNaN(mealDate.getTime())) {
+            console.log(`⚠️ Meal "${meal.foodName}": Invalid date, excluding`)
             return false
           }
           
-          // Simple comparison: same year, month, day = today
-          const isToday = 
-            mealDate.getFullYear() === todayYear &&
-            mealDate.getMonth() === todayMonth &&
-            mealDate.getDate() === todayDay
+          // Convert meal date to string for comparison
+          const mealDateStr = `${mealDate.getFullYear()}-${String(mealDate.getMonth() + 1).padStart(2, '0')}-${String(mealDate.getDate()).padStart(2, '0')}`
+          const isToday = mealDateStr === todayDateStr
           
+          console.log(`📅 Meal "${meal.foodName}": createdAt="${mealDateStr}", today="${todayDateStr}", match=${isToday}`)
           return isToday
         } catch (err) {
           console.error('❌ Error filtering meal:', err, meal)
@@ -880,8 +1082,7 @@ export default function DashboardPage() {
             <Button
               variant="ghost"
               onClick={async () => {
-                const supabase = getSupabaseClient()
-                await supabase.auth.signOut()
+                await signOut()
                 router.push("/")
               }}
             >
@@ -901,18 +1102,29 @@ export default function DashboardPage() {
               <p className="text-muted-foreground">
                 Track your meals and nutrition insights
               </p>
+              {/* Debug info */}
+              <div className="text-xs text-muted-foreground mt-1">
+                Total meals: {allMeals.length} | Today's meals: {filteredMeals.length}
+              </div>
             </div>
             <div className="flex gap-4 items-center">
               <Button
                 variant="outline"
-                onClick={() => {
-                  console.log('🔄 Manual refresh button clicked')
+                onClick={async () => {
+                  console.log('🔄 ========== MANUAL REFRESH BUTTON CLICKED ==========')
+                  console.log('🔄 Current allMeals:', allMeals.length, 'meals')
                   if (refetchMeals) {
                     setLoadingMeals(true)
-                    refetchMeals().catch(err => {
+                    try {
+                      await refetchMeals()
+                      console.log('✅ Manual refetch completed - check if meals updated')
+                    } catch (err) {
                       console.error('❌ Error in manual refetch:', err)
                       setLoadingMeals(false)
-                    })
+                    }
+                  } else {
+                    console.error('❌ refetchMeals not available!')
+                    setLoadingMeals(false)
                   }
                 }}
                 disabled={loadingMeals}

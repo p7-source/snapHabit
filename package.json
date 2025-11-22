@@ -9,7 +9,9 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@clerk/nextjs": "^6.35.4",
     "@google-cloud/vision": "^5.3.4",
+    "@stripe/stripe-js": "^8.5.2",
     "@supabase/ssr": "^0.7.0",
     "@supabase/supabase-js": "^2.81.1",
     "class-variance-authority": "^0.7.1",
@@ -22,6 +24,7 @@
     "react-dom": "19.2.0",
     "react-firebase-hooks": "^5.1.1",
     "recharts": "^3.4.1",
+    "stripe": "^20.0.0",
     "tailwind-merge": "^3.4.0"
   },
   "devDependencies": {

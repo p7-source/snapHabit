@@ -3,6 +3,7 @@ import { getSupabaseClient } from "./supabase"
 /**
  * Record a daily login for the user
  * This should be called when user successfully logs in
+ * Also initializes today's daily summary to 0 if it doesn't exist
  */
 export async function recordDailyLogin(userId: string): Promise<boolean> {
   try {
@@ -53,6 +54,18 @@ export async function recordDailyLogin(userId: string): Promise<boolean> {
         })
       }
       return false
+    }
+    
+    // Initialize today's daily summary to 0 if it doesn't exist
+    // This ensures macros start at 0 for a new day
+    try {
+      console.log('🔄 Initializing daily summary for user:', userId)
+      const { initializeTodaySummary } = await import("./daily-summaries")
+      const result = await initializeTodaySummary(userId)
+      console.log('✅ Daily summary initialization result:', result)
+    } catch (err) {
+      // Don't block login if daily summary initialization fails
+      console.warn("⚠️ Failed to initialize daily summary:", err)
     }
     
     return true

@@ -1,33 +1,26 @@
+// Clerk handles OAuth callbacks automatically, but we can use this route
+// to record daily login after successful authentication
 import { NextRequest, NextResponse } from 'next/server'
-import { createClient } from '@supabase/supabase-js'
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || ''
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || ''
+import { auth } from '@clerk/nextjs/server'
 
 export async function GET(request: NextRequest) {
-  const requestUrl = new URL(request.url)
-  const code = requestUrl.searchParams.get('code')
-  const type = requestUrl.searchParams.get('type') // 'recovery' for password reset
-
-  if (code && supabaseUrl && supabaseAnonKey) {
-    const supabase = createClient(supabaseUrl, supabaseAnonKey)
-    const { error } = await supabase.auth.exchangeCodeForSession(code)
-
-    if (error) {
-      console.error('Error exchanging code for session:', error)
-      // Redirect to login with error
-      const loginUrl = new URL('/login', request.url)
-      loginUrl.searchParams.set('error', 'invalid_token')
-      return NextResponse.redirect(loginUrl)
+  try {
+    const { userId } = await auth()
+    
+    // Record daily login and initialize today's summary after OAuth login
+    if (userId) {
+      try {
+        const { recordDailyLogin } = await import('@/lib/daily-logins')
+        await recordDailyLogin(userId)
+      } catch (err) {
+        // Don't block OAuth login if daily login recording fails
+        console.warn('Failed to record daily login:', err)
+      }
     }
-
-    // If it's a password recovery, redirect to reset password page
-    if (type === 'recovery') {
-      return NextResponse.redirect(new URL('/reset-password', request.url))
-    }
+  } catch (error) {
+    console.error('Error in auth callback:', error)
   }
 
-  // Default redirect to dashboard for OAuth
+  // Redirect to dashboard
   return NextResponse.redirect(new URL('/dashboard', request.url))
 }
-
