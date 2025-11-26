@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react"
 import { useRouter } from "next/navigation"
 import { useClerkAuth } from "@/lib/use-clerk-auth"
+import { useSubscription } from "@/lib/use-subscription"
 import { getSupabaseClient } from "@/lib/supabase"
 import ImageUpload from "@/components/upload/ImageUpload"
 import { Button } from "@/components/ui/button"
@@ -14,6 +15,7 @@ import { compressImage } from "@/lib/image-compress"
 
 export default function UploadPageClient() {
   const [user, loading] = useClerkAuth()
+  const { isActive: hasActiveSubscription, loading: subscriptionLoading } = useSubscription()
   const [selectedImage, setSelectedImage] = useState<File | null>(null)
   const [analyzing, setAnalyzing] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -24,16 +26,39 @@ export default function UploadPageClient() {
   const [error, setError] = useState("")
   const router = useRouter()
 
+  // PAYWALL: Check subscription status and redirect if needed
+  useEffect(() => {
+    if (!loading && !subscriptionLoading && user) {
+      if (!hasActiveSubscription) {
+        console.log('🚫 No active subscription, redirecting to pricing...')
+        router.push('/pricing?paywall=required')
+      }
+    }
+  }, [user, loading, subscriptionLoading, hasActiveSubscription, router])
+
   useEffect(() => {
     if (!loading && !user) {
       router.push("/login")
     }
   }, [user, loading, router])
 
-  if (loading) {
+  // PAYWALL: Show loading while checking subscription
+  if (loading || subscriptionLoading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
         <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  // PAYWALL: Show redirecting state if no subscription
+  if (user && !subscriptionLoading && !hasActiveSubscription) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-4" />
+          <p className="text-muted-foreground">Redirecting to subscription...</p>
+        </div>
       </div>
     )
   }
@@ -330,29 +355,47 @@ export default function UploadPageClient() {
       if (typeof window !== 'undefined') {
         // Use BroadcastChannel for same-origin communication (works in same tab and other tabs)
         try {
-          const channel = new BroadcastChannel('meal-updates')
-          channel.postMessage({ 
-            type: 'MEAL_SAVED', 
-            mealId: mealData?.id, 
-            timestamp: Date.now(),
-            calories: mealData?.calories,
-            macros: mealData?.macros
-          })
-          // Don't close immediately - let dashboard receive it first
-          setTimeout(() => channel.close(), 100)
+          if (typeof BroadcastChannel !== 'undefined') {
+            const channel = new BroadcastChannel('meal-updates')
+            channel.postMessage({ 
+              type: 'MEAL_SAVED', 
+              mealId: mealData?.id, 
+              timestamp: Date.now(),
+              calories: mealData?.calories,
+              macros: mealData?.macros
+            })
+            // Don't close immediately - let dashboard receive it first
+            setTimeout(() => {
+              try {
+                channel.close()
+              } catch (e) {
+                // Ignore close errors
+              }
+            }, 100)
+          }
         } catch (e) {
-          // BroadcastChannel not supported, fallback to localStorage
+          // BroadcastChannel not supported or error, fallback to localStorage
+          console.warn('⚠️ BroadcastChannel error (using localStorage fallback):', e)
         }
         
         // Also use localStorage event to notify other tabs
-        localStorage.setItem('meal-saved', JSON.stringify({
-          timestamp: Date.now(),
-          mealId: mealData?.id
-        }))
-        // Remove it after a short delay to allow event to fire
-        setTimeout(() => {
-          localStorage.removeItem('meal-saved')
-        }, 100)
+        try {
+          localStorage.setItem('meal-saved', JSON.stringify({
+            timestamp: Date.now(),
+            mealId: mealData?.id
+          }))
+          // Remove it after a short delay to allow event to fire
+          setTimeout(() => {
+            try {
+              localStorage.removeItem('meal-saved')
+            } catch (e) {
+              // Ignore localStorage errors
+            }
+          }, 100)
+        } catch (e) {
+          // Ignore localStorage errors (might be disabled in private browsing)
+          console.warn('⚠️ localStorage error (non-critical):', e)
+        }
       }
 
       // Clear form state

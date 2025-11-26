@@ -49,7 +49,9 @@ export async function POST(req: NextRequest) {
   switch (event.type) {
     case 'checkout.session.completed': {
       const session = event.data.object as Stripe.Checkout.Session
-      const userId = session.metadata?.userId
+      
+      // SIMPLE: userId should always be in metadata (from create-checkout-session)
+      let userId = session.metadata?.userId
       
       console.log('📦 Received checkout.session.completed event')
       console.log('   Session ID:', session.id)
@@ -57,8 +59,30 @@ export async function POST(req: NextRequest) {
       console.log('   Subscription:', session.subscription)
       console.log('   User ID from metadata:', userId)
       
+      // Fallback: Try to get from customer metadata if not in session metadata
+      if (!userId && session.customer) {
+        try {
+          const customerId = typeof session.customer === 'string' 
+            ? session.customer 
+            : (session.customer as Stripe.Customer).id
+          
+          const customer = await stripe.customers.retrieve(customerId)
+          if (customer && !customer.deleted) {
+            userId = (customer as Stripe.Customer).metadata?.userId
+            if (userId) {
+              console.log('   ⚠️ Using userId from customer metadata as fallback:', userId)
+            }
+          }
+        } catch (error) {
+          console.warn('⚠️ Could not retrieve customer:', error)
+        }
+      }
+      
       if (!userId) {
-        console.error('❌ No userId in session metadata')
+        console.error('❌ CRITICAL: No userId found in session or customer metadata!')
+        console.error('   Session metadata:', session.metadata)
+        console.error('   This should never happen if checkout session is created correctly')
+        console.error('   Cannot process subscription without userId')
         break
       }
       

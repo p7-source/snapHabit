@@ -1,87 +1,166 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { auth } from '@clerk/nextjs/server'
 import { stripe } from '@/lib/stripe'
-import { getSupabaseClient } from '@/lib/supabase'
-import { getStripeCustomerId, createOrGetCustomer } from '@/lib/stripe'
+import { createOrGetCustomer } from '@/lib/stripe'
 
+/**
+ * Create Stripe checkout session
+ * Simplified: Always passes userId in metadata (no complex mapping)
+ */
 export async function POST(req: NextRequest) {
   try {
+    console.log('📦 Creating checkout session...')
+    
     if (!process.env.STRIPE_SECRET_KEY) {
+      console.error('❌ STRIPE_SECRET_KEY not configured')
       return NextResponse.json(
         { error: 'STRIPE_SECRET_KEY is not configured. Please add it to .env.local' },
         { status: 500 }
       )
     }
 
+    console.log('✅ Stripe secret key found')
+    
     const { userId } = await auth()
+    console.log('👤 User ID:', userId)
     
     if (!userId) {
+      console.error('❌ No user ID from auth')
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
     }
     
-    const { email } = await req.json()
-    
-    if (!email) {
-      return NextResponse.json({ error: 'Email required' }, { status: 400 })
-    }
-    
-    if (!process.env.STRIPE_PRICE_ID) {
+    let requestBody
+    try {
+      requestBody = await req.json()
+      console.log('📋 Request body:', { email: requestBody.email, priceId: requestBody.priceId })
+    } catch (parseError) {
+      console.error('❌ Failed to parse request body:', parseError)
       return NextResponse.json(
-        { error: 'STRIPE_PRICE_ID not configured' },
-        { status: 500 }
+        { error: 'Invalid request body' },
+        { status: 400 }
       )
     }
     
-    // Create or get Stripe customer
-    let customerId = await getStripeCustomerId(userId)
+    const { email, priceId } = requestBody
     
-    if (!customerId) {
-      customerId = await createOrGetCustomer(userId, email)
+    if (!email || !priceId) {
+      console.error('❌ Missing email or priceId:', { email: !!email, priceId: !!priceId })
+      return NextResponse.json(
+        { error: 'Email and priceId required' },
+        { status: 400 }
+      )
     }
     
-    // Get base URL - ensure it's properly formatted
+    console.log('🔄 Creating or getting Stripe customer...')
+    // Create or get Stripe customer (simple - userId always known)
+    let customerId
+    try {
+      customerId = await createOrGetCustomer(userId, email)
+      console.log('✅ Customer ID:', customerId)
+    } catch (customerError) {
+      console.error('❌ Error creating/getting customer:', customerError)
+      throw customerError
+    }
+    
+    // Get base URL
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 
                    (req.headers.get('origin') || 'http://localhost:3000')
-    
-    // Ensure baseUrl doesn't have trailing slash
     const cleanBaseUrl = baseUrl.replace(/\/$/, '')
     
-    // Create checkout session with proper success_url
-    // Per Stripe docs: https://docs.stripe.com/api/checkout/sessions/object#checkout_session_object-success_url
-    // The {CHECKOUT_SESSION_ID} placeholder will be replaced by Stripe with the actual session ID
+    // Validate Price ID format
+    if (!priceId || !priceId.startsWith('price_')) {
+      console.error('❌ Invalid Price ID format:', priceId)
+      return NextResponse.json(
+        { error: `Invalid Price ID format. Expected 'price_xxxxx', got: ${priceId || 'empty'}` },
+        { status: 400 }
+      )
+    }
+    
+    console.log('💳 Creating Stripe checkout session...')
+    // Create checkout session
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
       mode: 'subscription',
       payment_method_types: ['card'],
       line_items: [
         {
-          price: process.env.STRIPE_PRICE_ID,
+          price: priceId,
           quantity: 1,
         },
       ],
-      // Success URL with CHECKOUT_SESSION_ID placeholder (required by Stripe)
-      success_url: `${cleanBaseUrl}/dashboard?session_id={CHECKOUT_SESSION_ID}`,
+      // Simple success URL - just go back to pricing page
+      // Client will poll for subscription status
+      success_url: `${cleanBaseUrl}/pricing?success=true`,
       cancel_url: `${cleanBaseUrl}/pricing?canceled=true`,
+      // CRITICAL: Always pass userId in metadata (simple, always works)
       metadata: {
         userId,
       },
-      // Allow promotion codes
       allow_promotion_codes: true,
     })
     
     console.log('✅ Checkout session created:', {
       id: session.id,
       url: session.url,
-      success_url: session.success_url,
-      status: session.status
+      userId: userId
     })
     
-    return NextResponse.json({ sessionId: session.id, url: session.url })
+    return NextResponse.json({ 
+      sessionId: session.id, 
+      url: session.url 
+    })
   } catch (error) {
-    console.error('Error creating checkout session:', error)
+    console.error('❌ ========== ERROR CREATING CHECKOUT SESSION ==========')
+    console.error('Error type:', typeof error)
+    console.error('Error:', error)
+    
+    // Provide more detailed error messages
+    let errorMessage = 'Failed to create checkout session'
+    let statusCode = 500
+    
+    if (error instanceof Error) {
+      errorMessage = error.message
+      console.error('   Error details:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name
+      })
+      
+      // Check for specific Stripe errors
+      if (error.message.includes('No such price') || error.message.includes('No such Price')) {
+        errorMessage = `Price ID not found in Stripe. Please verify it exists in your Stripe Dashboard.`
+        statusCode = 400
+      } else if (error.message.includes('No such customer')) {
+        errorMessage = 'Customer record is invalid. Please try again - a new customer will be created automatically.'
+        statusCode = 400
+        console.error('   Customer ID issue - will be fixed on retry')
+      } else if (error.message.includes('Invalid API Key') || error.message.includes('api_key')) {
+        errorMessage = 'Invalid Stripe API key. Please check STRIPE_SECRET_KEY in .env.local'
+        statusCode = 500
+      } else if (error.message.includes('You must provide')) {
+        errorMessage = error.message
+        statusCode = 400
+      } else if (error.message.includes('Supabase')) {
+        errorMessage = `Database error: ${error.message}`
+        statusCode = 500
+      }
+    } else if (typeof error === 'object' && error !== null) {
+      // Stripe API errors are usually objects
+      const stripeError = error as any
+      if (stripeError.type) {
+        errorMessage = `Stripe error: ${stripeError.message || stripeError.type}`
+        console.error('   Stripe error details:', JSON.stringify(stripeError, null, 2))
+        statusCode = 400
+      } else {
+        console.error('   Unknown error object:', JSON.stringify(error, null, 2))
+      }
+    }
+    
+    console.error('❌ Returning error response:', { error: errorMessage, status: statusCode })
+    
     return NextResponse.json(
-      { error: 'Failed to create checkout session' },
-      { status: 500 }
+      { error: errorMessage },
+      { status: statusCode }
     )
   }
 }

@@ -50,7 +50,7 @@ export default function LoginPage() {
             routing="path"
             path="/login"
             signUpUrl="/register"
-            afterSignInUrl="/dashboard"
+            fallbackRedirectUrl="/auth/callback"
             appearance={clerkAppearance}
           />
         </div>

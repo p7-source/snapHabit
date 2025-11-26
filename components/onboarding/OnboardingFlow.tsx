@@ -150,7 +150,8 @@ export default function OnboardingFlow() {
           console.warn("⚠️ Failed to record daily login:", err)
         }
         
-        router.push("/pricing")
+        // Redirect to pricing page for subscription after onboarding
+        router.push("/pricing?onboarding=complete")
       } else {
         console.error("❌ Profile save failed. Check browser console for details.")
         alert("Failed to save profile. Please check the browser console for details and try again.")

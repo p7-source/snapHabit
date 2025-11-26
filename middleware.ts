@@ -4,7 +4,7 @@ const isProtectedRoute = createRouteMatcher([
   '/dashboard(.*)',
   '/onboarding(.*)',
   '/upload(.*)',
-  '/pricing(.*)',
+  // Pricing page should be public - users need to see it before subscribing
 ]);
 
 // Public routes that should not be protected
@@ -13,6 +13,7 @@ const isPublicRoute = createRouteMatcher([
   '/register(.*)',
   '/forgot-password(.*)',
   '/reset-password(.*)',
+  '/pricing(.*)', // Pricing page should be public
   '/',
 ]);
 

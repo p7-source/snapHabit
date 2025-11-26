@@ -1,10 +1,60 @@
 "use client"
 
+import { useEffect, useState } from "react"
+import { useRouter } from "next/navigation"
+import { useUser } from "@clerk/nextjs"
 import { Button } from "@/components/ui/button"
 import Link from "next/link"
 import { Camera, TrendingUp, Sparkles } from "lucide-react"
+import { Loader2 } from "lucide-react"
 
 export default function Home() {
+  const { user, isLoaded } = useUser()
+  const router = useRouter()
+  const [error, setError] = useState<string | null>(null)
+
+  // Don't auto-redirect - show landing page for everyone
+  // Users can navigate manually via buttons/links
+
+  // Show error if any
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-4">
+        <div className="text-center space-y-4 max-w-md">
+          <h1 className="text-2xl font-bold text-red-600">Error Loading Page</h1>
+          <p className="text-muted-foreground">{error}</p>
+          <Button onClick={() => window.location.reload()}>Reload Page</Button>
+        </div>
+      </div>
+    )
+  }
+
+  // Show loading state while checking authentication (with timeout)
+  // If Clerk takes too long, show the page anyway
+  const [showPage, setShowPage] = useState(false)
+  
+  useEffect(() => {
+    // If Clerk loads, show page
+    if (isLoaded) {
+      setShowPage(true)
+    } else {
+      // Timeout after 2 seconds - show page even if Clerk is slow
+      const timer = setTimeout(() => {
+        setShowPage(true)
+      }, 2000)
+      return () => clearTimeout(timer)
+    }
+  }, [isLoaded])
+  
+  if (!showPage && !isLoaded) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  // This should not render if redirect works, but keep as fallback
   return (
     <div className="min-h-screen flex flex-col">
       {/* Navigation */}
@@ -12,12 +62,25 @@ export default function Home() {
         <div className="container mx-auto px-4 py-4 flex justify-between items-center">
           <h1 className="text-2xl font-bold text-primary">SnapHabit</h1>
           <div className="flex gap-4">
-            <Link href="/login">
-              <Button variant="ghost">Login</Button>
-            </Link>
-            <Link href="/upload">
-              <Button>Get Started</Button>
-            </Link>
+            {user ? (
+              <>
+                <Link href="/dashboard">
+                  <Button variant="ghost">Dashboard</Button>
+                </Link>
+                <Link href="/upload">
+                  <Button>Upload Meal</Button>
+                </Link>
+              </>
+            ) : (
+              <>
+                <Link href="/login">
+                  <Button variant="ghost">Login</Button>
+                </Link>
+                <Link href="/login">
+                  <Button>Get Started</Button>
+                </Link>
+              </>
+            )}
           </div>
         </div>
       </nav>
@@ -63,11 +126,19 @@ export default function Home() {
 
           {/* CTA */}
           <div className="mt-12">
-            <Link href="/upload">
-              <Button size="lg" className="text-lg px-8 py-6">
-                Start Tracking Your Meals
-              </Button>
-            </Link>
+            {user ? (
+              <Link href="/dashboard">
+                <Button size="lg" className="text-lg px-8 py-6">
+                  Go to Dashboard
+                </Button>
+              </Link>
+            ) : (
+              <Link href="/login">
+                <Button size="lg" className="text-lg px-8 py-6">
+                  Get Started
+                </Button>
+              </Link>
+            )}
           </div>
         </div>
       </main>

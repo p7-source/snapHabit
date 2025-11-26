@@ -23,6 +23,9 @@ import MonthlyView from "@/components/dashboard/MonthlyView"
 import LoginStreakCard from "@/components/dashboard/LoginStreakCard"
 
 export default function DashboardPage() {
+  // ==========================================
+  // ALL HOOKS MUST BE CALLED FIRST (Rules of Hooks)
+  // ==========================================
   const [user, loading] = useClerkAuth()
   const { signOut } = useClerk()
   const { isActive: hasActiveSubscription, loading: subscriptionLoading } = useSubscription()
@@ -46,6 +49,7 @@ export default function DashboardPage() {
     totalFat: number
     mealCount: number
   } | null>(null)
+  const [isRedirectingToPricing, setIsRedirectingToPricing] = useState(false)
   const router = useRouter()
 
   // Fetch daily summary from daily_summaries table
@@ -304,11 +308,12 @@ export default function DashboardPage() {
   }, [user, fetchDailySummary])
 
   useEffect(() => {
-    console.log('🔍 ========== DASHBOARD useEffect TRIGGERED ==========')
     console.log('🔍 Dashboard useEffect triggered:', {
       loading,
       hasUser: !!user,
       userId: user?.id,
+      hasActiveSubscription,
+      subscriptionLoading,
       timestamp: new Date().toISOString()
     })
     
@@ -323,26 +328,16 @@ export default function DashboardPage() {
       return
     }
 
+    // PAYWALL: Note - subscription check is now handled in conditional rendering
+    // This useEffect no longer handles redirects to avoid duplicate redirects
+
     if (user) {
       console.log('✅ User found, initializing dashboard for user:', user.id)
-      console.log('✅ Starting dashboard initialization...')
       
-      // Check subscription status
-      // IMPORTANT: Skip this check if we just completed checkout (session_id was present)
-      // The session_id handler above will manage the subscription check in that case
-      const urlParamsCheck = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
-      const hasSessionId = urlParamsCheck?.get('session_id')
-      
-      // Only check subscription if we're not in the middle of processing a checkout
-      if (!hasSessionId && !subscriptionLoading) {
-        if (!hasActiveSubscription) {
-          console.log('⚠️ No active subscription, redirecting to pricing')
-          router.push("/pricing")
-          return
-        }
-        console.log('✅ Active subscription found')
-      } else if (hasSessionId) {
-        console.log('⏳ Processing checkout completion, skipping subscription check...')
+      // Wait for subscription check to complete before loading dashboard
+      if (subscriptionLoading) {
+        console.log('⏳ Subscription still loading... waiting...')
+        return
       }
       
       // Fetch user profile
@@ -355,16 +350,18 @@ export default function DashboardPage() {
           
           // Redirect to onboarding if profile doesn't exist
           if (!userProfile) {
+            console.log('⚠️ No profile found - redirecting to onboarding')
             router.push("/onboarding")
+            return
           }
         } catch (error) {
           console.error("Error fetching user profile:", error)
           setLoadingProfile(false)
+          // On error, still allow dashboard to load (graceful degradation)
         }
       })()
       
       // Record daily login and initialize daily summary (if not already done)
-      // This ensures daily_summaries has an entry for today
       void (async () => {
         try {
           const { recordDailyLogin } = await import("@/lib/daily-logins")
@@ -374,65 +371,6 @@ export default function DashboardPage() {
           console.warn("⚠️ Failed to record daily login:", err)
         }
       })()
-      
-      // Check for successful checkout (session_id in URL)
-      // Per Stripe docs: https://docs.stripe.com/api/checkout/sessions/object#checkout_session_object-success_url
-      const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null
-      const sessionId = urlParams?.get('session_id')
-      
-      if (sessionId) {
-        console.log('✅ Checkout session completed, session_id:', sessionId)
-        console.log('   Payment successful! Waiting for webhook to process...')
-        
-        // Remove session_id from URL for cleaner URL
-        if (typeof window !== 'undefined') {
-          urlParams?.delete('session_id')
-          const newUrl = window.location.pathname + (urlParams?.toString() ? '?' + urlParams.toString() : '')
-          window.history.replaceState({}, '', newUrl)
-        }
-        
-        // IMPORTANT: Skip subscription check and wait for webhook
-        // The webhook will update the subscription in Supabase
-        // We'll wait longer to ensure webhook processes (up to 5 seconds)
-        let attempts = 0
-        const maxAttempts = 10
-        const checkSubscription = async () => {
-          attempts++
-          console.log(`🔄 Checking subscription status (attempt ${attempts}/${maxAttempts})...`)
-          
-          try {
-            // Force refresh subscription status
-            const { getSubscription, isSubscriptionActive } = await import('@/lib/stripe')
-            const sub = await getSubscription(user.id)
-            
-            if (isSubscriptionActive(sub)) {
-              console.log('✅ Subscription is now active!')
-              // Reload to show dashboard with subscription
-              window.location.reload()
-              return
-            } else if (attempts < maxAttempts) {
-              // Wait 500ms and check again
-              setTimeout(checkSubscription, 500)
-            } else {
-              console.log('⚠️ Subscription not active yet, but payment was successful')
-              console.log('   Webhook may still be processing. Reloading anyway...')
-              window.location.reload()
-            }
-          } catch (error) {
-            console.error('❌ Error checking subscription:', error)
-            if (attempts < maxAttempts) {
-              setTimeout(checkSubscription, 500)
-            } else {
-              // Final reload after max attempts
-              window.location.reload()
-            }
-          }
-        }
-        
-        // Start checking after 1 second (give webhook time to process)
-        setTimeout(checkSubscription, 1000)
-        return // Skip the rest of the useEffect to prevent redirect to pricing
-      }
       
       // Fetch daily summary (from daily_summaries table)
       fetchDailySummary()
@@ -846,32 +784,38 @@ export default function DashboardPage() {
 
     // Listen for BroadcastChannel messages (primary method - works in same tab)
     let broadcastChannel: BroadcastChannel | null = null
-    try {
-      broadcastChannel = new BroadcastChannel('meal-updates')
-      broadcastChannel.onmessage = (event) => {
-        if (event.data?.type === 'MEAL_SAVED') {
-          console.log('📢 BroadcastChannel: Meal saved, refetching...', {
-            mealId: event.data.mealId,
-            calories: event.data.calories,
-            macros: event.data.macros
-          })
-          // Add small delay to ensure database commit is complete
-          if (refetchMeals) {
-            console.log('🔄 Calling refetchMeals from BroadcastChannel...')
-            setTimeout(() => {
-              refetchMeals()
-            }, 1000) // Wait 1 second for database commit
-          } else {
-            console.error('❌ refetchMeals is not available!')
+    if (typeof window !== 'undefined') {
+      try {
+        broadcastChannel = new BroadcastChannel('meal-updates')
+        broadcastChannel.onmessage = (event) => {
+          if (event.data?.type === 'MEAL_SAVED') {
+            console.log('📢 BroadcastChannel: Meal saved, refetching...', {
+              mealId: event.data.mealId,
+              calories: event.data.calories,
+              macros: event.data.macros
+            })
+            // Add small delay to ensure database commit is complete
+            if (refetchMeals) {
+              console.log('🔄 Calling refetchMeals from BroadcastChannel...')
+              setTimeout(() => {
+                refetchMeals()
+              }, 1000) // Wait 1 second for database commit
+            } else {
+              console.error('❌ refetchMeals is not available!')
+            }
           }
         }
+      } catch (e) {
+        // BroadcastChannel not supported or error, will use storage events only
+        console.warn('⚠️ BroadcastChannel not supported, using storage events only:', e)
       }
-    } catch (e) {
-      // BroadcastChannel not supported, will use storage events only
-      console.warn('⚠️ BroadcastChannel not supported, using storage events only')
-    }
 
-    window.addEventListener('storage', handleStorageChange)
+      try {
+        window.addEventListener('storage', handleStorageChange)
+      } catch (e) {
+        console.warn('⚠️ Could not add storage event listener:', e)
+      }
+    }
     
     // Polling fallback: refetch every 5 seconds if page is visible
     // This ensures updates even if real-time subscription fails
@@ -887,12 +831,23 @@ export default function DashboardPage() {
       clearTimeout(timeout1)
       clearTimeout(timeout2)
       clearTimeout(timeout3)
-      window.removeEventListener('focus', handleFocus)
-      document.removeEventListener('visibilitychange', handleVisibilityChange)
-      window.removeEventListener('pageshow', handlePageShow)
-      window.removeEventListener('storage', handleStorageChange)
+      if (typeof window !== 'undefined') {
+        try {
+          window.removeEventListener('focus', handleFocus)
+          document.removeEventListener('visibilitychange', handleVisibilityChange)
+          window.removeEventListener('pageshow', handlePageShow)
+          window.removeEventListener('storage', handleStorageChange)
+        } catch (e) {
+          // Ignore errors during cleanup - might be from browser extensions
+          console.warn('⚠️ Error during event listener cleanup (likely harmless):', e)
+        }
+      }
       if (broadcastChannel) {
-        broadcastChannel.close()
+        try {
+          broadcastChannel.close()
+        } catch (e) {
+          console.warn('⚠️ Error closing BroadcastChannel (likely harmless):', e)
+        }
       }
       clearInterval(pollInterval)
     }
@@ -934,6 +889,15 @@ export default function DashboardPage() {
       }, 100)
     }
   }, [user, refetchMeals])
+
+  // PAYWALL: Handle redirect in useEffect (cannot call router.push during render)
+  useEffect(() => {
+    if (user && !subscriptionLoading && !hasActiveSubscription && !isRedirectingToPricing) {
+      console.log('🚫 No active subscription - redirecting to pricing paywall')
+      setIsRedirectingToPricing(true)
+      router.push('/pricing?paywall=required')
+    }
+  }, [user, subscriptionLoading, hasActiveSubscription, isRedirectingToPricing, router])
 
   // Filter meals for current period - recalculates when allMeals or period changes
   const filteredMeals = useMemo(() => {
@@ -1052,6 +1016,31 @@ export default function DashboardPage() {
     ? processMonthData(allMeals, currentMonth.year, currentMonth.month, profile)
     : null
 
+  // ==========================================
+  // CONDITIONAL RENDERING (after all hooks)
+  // ==========================================
+  
+  // PAYWALL: Show loading state while checking subscription
+  if (loading || subscriptionLoading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-blue-100/50 to-primary/20">
+        <Loader2 className="w-8 h-8 animate-spin text-primary" />
+      </div>
+    )
+  }
+
+  // PAYWALL: Show redirecting state if no subscription (prevent flash of dashboard content)
+  if (user && !subscriptionLoading && !hasActiveSubscription) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 via-blue-100/50 to-primary/20">
+        <div className="text-center">
+          <Loader2 className="w-8 h-8 animate-spin text-primary mx-auto mb-4" />
+          <p className="text-muted-foreground">Redirecting to subscription...</p>
+        </div>
+      </div>
+    )
+  }
+
   if (loading || loadingMeals || loadingProfile) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
@@ -1063,6 +1052,9 @@ export default function DashboardPage() {
   if (!profile) {
     return null // Will redirect to onboarding
   }
+
+  // PAYWALL: Only render dashboard content if user has active subscription
+  // (The check above already redirects users without subscription to pricing)
 
   return (
     <div className="min-h-screen bg-background">

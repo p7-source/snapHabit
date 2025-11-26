@@ -1,5 +1,20 @@
 import Stripe from 'stripe'
 import { getSupabaseClient } from './supabase'
+import { createClient } from '@supabase/supabase-js'
+
+/**
+ * Get server-side Supabase client for API routes
+ */
+function getSupabaseServerClient() {
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || 'https://vmpkjvbtfhdaaaiueqxa.supabase.co'
+  const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || process.env.SUPABASE_KEY || ''
+  
+  if (!supabaseUrl || !supabaseKey) {
+    throw new Error('Supabase URL or key is missing')
+  }
+  
+  return createClient(supabaseUrl, supabaseKey)
+}
 
 // Lazy initialization - only create Stripe instance when actually used
 let stripeInstance: Stripe | null = null
@@ -61,9 +76,13 @@ export const stripe = new Proxy({} as Stripe, {
 
 /**
  * Get Stripe customer ID for a user
+ * Works on both client and server side
  */
 export async function getStripeCustomerId(userId: string): Promise<string | null> {
-  const supabase = getSupabaseClient()
+  // Use server-side client if on server, otherwise use client-side
+  const supabase = typeof window === 'undefined' 
+    ? getSupabaseServerClient()
+    : getSupabaseClient()
   
   const { data } = await supabase
     .from('subscriptions')
@@ -76,21 +95,64 @@ export async function getStripeCustomerId(userId: string): Promise<string | null
 
 /**
  * Create or get Stripe customer for a user
+ * Works on both client and server side
+ * Verifies customer exists in Stripe before using it
  */
 export async function createOrGetCustomer(userId: string, email: string): Promise<string> {
-  const supabase = getSupabaseClient()
+  // Use server-side client if on server, otherwise use client-side
+  const supabase = typeof window === 'undefined' 
+    ? getSupabaseServerClient()
+    : getSupabaseClient()
   
-  // Check if customer exists
+  // Check if customer exists in database
   const existing = await getStripeCustomerId(userId)
-  if (existing) return existing
   
-  // Create new Stripe customer
+  if (existing) {
+    // Verify the customer actually exists in Stripe
+    try {
+      const customer = await stripe.customers.retrieve(existing)
+      
+      // If customer was deleted, it will have deleted: true
+      if (customer.deleted) {
+        console.log('⚠️ Customer was deleted in Stripe, creating new one...')
+        // Delete from database and create new
+        await supabase
+          .from('subscriptions')
+          .update({ stripe_customer_id: null })
+          .eq('user_id', userId)
+      } else {
+        // Customer exists and is valid, return it
+        console.log('✅ Using existing Stripe customer:', existing)
+        return existing
+      }
+    } catch (error: any) {
+      // Customer doesn't exist in Stripe (error code: resource_missing)
+      if (error.code === 'resource_missing' || error.message?.includes('No such customer')) {
+        console.log('⚠️ Customer ID in database but not in Stripe, creating new one...')
+        console.log('   Invalid customer ID:', existing)
+        // Remove invalid customer ID from database
+        await supabase
+          .from('subscriptions')
+          .update({ stripe_customer_id: null })
+          .eq('user_id', userId)
+      } else {
+        // Some other error, rethrow it
+        console.error('❌ Error retrieving customer from Stripe:', error)
+        throw error
+      }
+    }
+  }
+  
+  // Create new Stripe customer (either didn't exist or was invalid)
+  console.log('🔄 Creating new Stripe customer for user:', userId)
   const customer = await stripe.customers.create({
     email,
     metadata: {
       userId,
     },
   })
+  
+  console.log('✅ Created new Stripe customer:', customer.id)
   
   // Save to database
   await supabase
@@ -107,28 +169,95 @@ export async function createOrGetCustomer(userId: string, email: string): Promis
 
 /**
  * Get subscription for a user
+ * Works on both client and server side
  */
 export async function getSubscription(userId: string) {
-  const supabase = getSupabaseClient()
+  // Use server-side client if on server, otherwise use client-side
+  const supabase = typeof window === 'undefined' 
+    ? getSupabaseServerClient()
+    : getSupabaseClient()
   
-  const { data } = await supabase
+  console.log('🔍 getSubscription - Looking for subscription with userId:', userId)
+  console.log('🔍 getSubscription - UserId type:', typeof userId)
+  console.log('🔍 getSubscription - UserId length:', userId?.length)
+  
+  // Use maybeSingle() to return null instead of error when no subscription found
+  const { data, error } = await supabase
     .from('subscriptions')
     .select('*')
     .eq('user_id', userId)
-    .single()
+    .maybeSingle()
   
-  return data
+  // Log detailed information about the query
+  console.log('🔍 getSubscription - Query result:', {
+    hasData: !!data,
+    hasError: !!error,
+    errorCode: error?.code,
+    errorMessage: error?.message,
+    subscriptionData: data ? {
+      id: data.id,
+      user_id: data.user_id,
+      status: data.status,
+      stripe_subscription_id: data.stripe_subscription_id,
+    } : null
+  })
+  
+  // If error occurred and it's not "no rows found", log it
+  if (error && error.code !== 'PGRST116') {
+    console.error('❌ Error fetching subscription:', error)
+  }
+  
+  // Return null if no subscription found (which is expected for new users)
+  if (!data) {
+    console.log('⚠️ No subscription found for userId:', userId)
+  } else {
+    console.log('✅ Subscription found:', {
+      user_id: data.user_id,
+      status: data.status,
+      isActive: data.status === 'active'
+    })
+  }
+  
+  return data || null
 }
 
 /**
  * Check if subscription is active
+ * Trusts Stripe's status field - if status is 'active', subscription is active
  */
 export function isSubscriptionActive(subscription: any): boolean {
-  if (!subscription) return false
-  if (subscription.status !== 'active') return false
-  if (subscription.stripe_current_period_end) {
-    return new Date(subscription.stripe_current_period_end) > new Date()
+  if (!subscription) {
+    console.log('🔍 isSubscriptionActive - No subscription provided')
+    return false
   }
+  
+  const status = subscription.status
+  
+  console.log('🔍 isSubscriptionActive - Checking subscription:', {
+    status,
+    statusType: typeof status,
+    statusValue: JSON.stringify(status),
+    subscriptionId: subscription.stripe_subscription_id,
+    userId: subscription.user_id
+  })
+  
+  // Stripe subscription statuses that indicate an active subscription
+  // 'active' = subscription is active and in good standing
+  // 'trialing' = subscription is in trial period (treat as active)
+  // 'past_due' = payment failed but still active (could treat as active or inactive)
+  // For now, we'll only treat 'active' as truly active
+  
+  // Use strict equality and handle case sensitivity
+  const normalizedStatus = String(status).toLowerCase().trim()
+  
+  if (normalizedStatus === 'active') {
+    console.log('✅ Subscription is ACTIVE')
+    return true
+  }
+  
+  // All other statuses (canceled, incomplete, incomplete_expired, past_due, trialing, unpaid)
+  // are considered inactive for our purposes
+  console.log('❌ Subscription is NOT active. Status:', normalizedStatus)
   return false
 }
 

@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { useUser } from '@clerk/nextjs'
-import { getSubscription, isSubscriptionActive } from './stripe'
 
 export interface Subscription {
   id: string
@@ -23,16 +22,34 @@ export function useSubscription() {
   useEffect(() => {
     if (!user) {
       setLoading(false)
+      setIsActive(false)
+      setSubscription(null)
       return
     }
 
     const checkSubscription = async () => {
       try {
-        const sub = await getSubscription(user.id)
-        setSubscription(sub)
-        setIsActive(isSubscriptionActive(sub))
+        console.log('🔍 useSubscription - Checking subscription for user:', user.id)
+        
+        // Use API route instead of direct database access for better reliability
+        const response = await fetch('/api/subscription-status')
+        
+        if (!response.ok) {
+          throw new Error(`Failed to check subscription: ${response.status}`)
+        }
+        
+        const data = await response.json()
+        console.log('🔍 useSubscription - API response:', {
+          hasSubscription: data.hasSubscription,
+          isActive: data.isActive,
+          status: data.status,
+          subscription: data.subscription
+        })
+        
+        setSubscription(data.subscription)
+        setIsActive(data.isActive)
       } catch (error) {
-        console.error('Error checking subscription:', error)
+        console.error('❌ Error checking subscription:', error)
         setSubscription(null)
         setIsActive(false)
       } finally {
