@@ -80,3 +80,20 @@ coverage/
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# Stripe CLI and executables
+stripe.exe
+stripe-cli.zip
+%USERPROFILE%/
+stripe-cli/
+
+# Debug/temporary PowerShell scripts (keep useful ones)
+debug-*.ps1
+fix-*.ps1
+comprehensive-*.ps1
+test-*.ps1
+verify-*.ps1
+enable-*.ps1
+setup-*.ps1
+start-*.ps1
+add-*.ps1
