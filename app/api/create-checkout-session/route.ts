@@ -76,11 +76,28 @@ export async function POST(req: NextRequest) {
       )
     }
     
-    console.log('💳 Creating Stripe checkout session...')
-    // Create checkout session
+    // Check if this is a lifetime purchase (one-time payment)
+    const lifetimePriceId = process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_LIFETIME || ''
+    const isLifetimePrice = priceId === lifetimePriceId.trim()
+    const monthlyPriceId = process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_MONTHLY || ''
+    const yearlyPriceId = process.env.NEXT_PUBLIC_STRIPE_PRICE_ID_YEARLY || ''
+    
+    // Determine tier flags
+    const isMonthly = priceId === monthlyPriceId.trim()
+    const isYearly = priceId === yearlyPriceId.trim()
+    
+    console.log('💳 Creating Stripe checkout session...', {
+      priceId,
+      isLifetimePrice,
+      isMonthly,
+      isYearly,
+      mode: isLifetimePrice ? 'payment' : 'subscription'
+    })
+    
+    // Create checkout session with appropriate mode
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
-      mode: 'subscription',
+      mode: isLifetimePrice ? 'payment' : 'subscription', // One-time payment for lifetime, subscription for monthly/yearly
       payment_method_types: ['card'],
       line_items: [
         {
@@ -92,9 +109,13 @@ export async function POST(req: NextRequest) {
       // Client will poll for subscription status
       success_url: `${cleanBaseUrl}/pricing?success=true`,
       cancel_url: `${cleanBaseUrl}/pricing?canceled=true`,
-      // CRITICAL: Always pass userId in metadata (simple, always works)
+      // CRITICAL: Always pass userId and tier information in metadata
       metadata: {
         userId,
+        priceId, // Store price ID for webhook processing
+        isLifetime: isLifetimePrice ? 'true' : 'false',
+        isMonthly: isMonthly ? 'true' : 'false',
+        isYearly: isYearly ? 'true' : 'false',
       },
       allow_promotion_codes: true,
     })

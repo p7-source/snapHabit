@@ -61,3 +61,4 @@ Write-Host "  - Close and reopen terminal after adding to PATH" -ForegroundColor
 Write-Host "=" * 50 -ForegroundColor Cyan
 
 
+

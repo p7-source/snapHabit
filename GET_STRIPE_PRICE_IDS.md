@@ -90,3 +90,4 @@ NEXT_PUBLIC_STRIPE_PRICE_ID_MONTHLY=price_1SX9pK3toYhZwQmwL2sTzSfB
 - If you only see Product ID, you need to add a price to the product
 
 
+

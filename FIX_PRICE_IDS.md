@@ -113,3 +113,4 @@ NEXT_PUBLIC_STRIPE_PRICE_ID_YEARLY=price_YOUR_ID
 4. Copy it and add to `.env.local`
 
 
+

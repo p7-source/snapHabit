@@ -231,6 +231,12 @@ export function isSubscriptionActive(subscription: any): boolean {
     return false
   }
   
+  // Lifetime purchases are always active (never expire)
+  if (subscription.is_lifetime === true) {
+    console.log('✅ Subscription is ACTIVE (Lifetime)')
+    return true
+  }
+  
   const status = subscription.status
   
   console.log('🔍 isSubscriptionActive - Checking subscription:', {
@@ -238,7 +244,8 @@ export function isSubscriptionActive(subscription: any): boolean {
     statusType: typeof status,
     statusValue: JSON.stringify(status),
     subscriptionId: subscription.stripe_subscription_id,
-    userId: subscription.user_id
+    userId: subscription.user_id,
+    is_lifetime: subscription.is_lifetime
   })
   
   // Stripe subscription statuses that indicate an active subscription

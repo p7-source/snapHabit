@@ -71,3 +71,4 @@ Write-Host "Fix: https://dashboard.stripe.com/test/pricing-tables" -ForegroundCo
 Write-Host "     → Edit your table → Set Success URL" -ForegroundColor Yellow
 
 
+

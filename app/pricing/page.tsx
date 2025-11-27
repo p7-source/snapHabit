@@ -10,14 +10,16 @@ import { useRouter } from "next/navigation"
 export default function PricingPage() {
   const { user, isLoaded } = useUser()
   const router = useRouter()
-  const [loading, setLoading] = useState(false)
+  const [loadingPriceId, setLoadingPriceId] = useState<string | null>(null) // Track which price ID is loading
   const [checkingStatus, setCheckingStatus] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [monthlyPriceId, setMonthlyPriceId] = useState<string>('')
   const [yearlyPriceId, setYearlyPriceId] = useState<string>('')
+  const [lifetimePriceId, setLifetimePriceId] = useState<string>('')
   const [priceIdsLoaded, setPriceIdsLoaded] = useState(false)
   const [hasMonthly, setHasMonthly] = useState(false)
   const [hasYearly, setHasYearly] = useState(false)
+  const [hasLifetime, setHasLifetime] = useState(false)
 
   // Check if user just paid (success param in URL)
   useEffect(() => {
@@ -97,8 +99,10 @@ export default function PricingPage() {
         if (response.ok) {
           setMonthlyPriceId(data.monthly || '')
           setYearlyPriceId(data.yearly || '')
+          setLifetimePriceId(data.lifetime || '')
           setHasMonthly(data.hasMonthly || false)
           setHasYearly(data.hasYearly || false)
+          setHasLifetime(data.hasLifetime || false)
           setPriceIdsLoaded(true)
           
           if (data.message || data.error) {
@@ -111,10 +115,13 @@ export default function PricingPage() {
             console.log('✅ Price IDs loaded from API:', {
               monthly: data.monthly || 'NOT SET',
               yearly: data.yearly || 'NOT SET',
+              lifetime: data.lifetime || 'NOT SET',
               hasMonthly: data.hasMonthly,
               hasYearly: data.hasYearly,
+              hasLifetime: data.hasLifetime,
               monthlyIsPlaceholder: data.monthlyIsPlaceholder,
               yearlyIsPlaceholder: data.yearlyIsPlaceholder,
+              lifetimeIsPlaceholder: data.lifetimeIsPlaceholder,
             })
           }
         } else {
@@ -146,7 +153,7 @@ export default function PricingPage() {
       return
     }
     
-    setLoading(true)
+    setLoadingPriceId(priceId) // Set which price ID is loading
     setError(null)
     
     try {
@@ -205,7 +212,7 @@ export default function PricingPage() {
     } catch (error) {
       console.error('Error creating checkout session:', error)
       setError(error instanceof Error ? error.message : 'Failed to start checkout. Please try again.')
-      setLoading(false)
+      setLoadingPriceId(null) // Clear loading state on error
     }
   }
 
@@ -312,7 +319,7 @@ export default function PricingPage() {
         )}
 
         {/* Pricing Plans */}
-        <div className="grid md:grid-cols-2 gap-6">
+        <div className="grid md:grid-cols-3 gap-6">
           <div className="p-8 border-2 rounded-lg bg-white shadow-sm hover:shadow-md transition-shadow">
             <h3 className="text-2xl font-bold mb-2">Monthly Plan</h3>
             <p className="text-4xl font-bold mb-1">$9.99</p>
@@ -344,11 +351,11 @@ export default function PricingPage() {
             ) : (
               <Button 
                 onClick={() => handleSubscribe(monthlyPriceId)}
-                disabled={loading || checkingStatus || !hasMonthly}
+                disabled={loadingPriceId === monthlyPriceId || checkingStatus || !hasMonthly}
                 className="w-full"
                 size="lg"
               >
-                {loading ? 'Loading...' : checkingStatus ? 'Processing...' : 'Subscribe Monthly'}
+                {loadingPriceId === monthlyPriceId ? 'Loading...' : checkingStatus ? 'Processing...' : 'Subscribe Monthly'}
               </Button>
             )}
           </div>
@@ -387,11 +394,59 @@ export default function PricingPage() {
             ) : (
               <Button 
                 onClick={() => handleSubscribe(yearlyPriceId)}
-                disabled={loading || checkingStatus || !hasYearly}
+                disabled={loadingPriceId === yearlyPriceId || checkingStatus || !hasYearly}
                 className="w-full"
                 size="lg"
               >
-                {loading ? 'Loading...' : checkingStatus ? 'Processing...' : 'Subscribe Yearly'}
+                {loadingPriceId === yearlyPriceId ? 'Loading...' : checkingStatus ? 'Processing...' : 'Subscribe Yearly'}
+              </Button>
+            )}
+          </div>
+          
+          {/* Lifetime Plan */}
+          <div className="p-8 border-2 border-primary rounded-lg bg-gradient-to-br from-primary/5 to-primary/10 shadow-sm hover:shadow-md transition-shadow">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-2xl font-bold">Lifetime</h3>
+              <span className="bg-green-500 text-white text-xs px-2 py-1 rounded">Best Value</span>
+            </div>
+            <p className="text-4xl font-bold mb-1">$299.99</p>
+            <p className="text-muted-foreground mb-6">one-time payment</p>
+            <ul className="space-y-2 mb-6 text-sm">
+              <li className="flex items-center">
+                <span className="text-green-500 mr-2">✓</span>
+                Everything in Yearly
+              </li>
+              <li className="flex items-center">
+                <span className="text-green-500 mr-2">✓</span>
+                No recurring charges
+              </li>
+              <li className="flex items-center">
+                <span className="text-green-500 mr-2">✓</span>
+                Lifetime access
+              </li>
+              <li className="flex items-center">
+                <span className="text-green-500 mr-2">✓</span>
+                All future features included
+              </li>
+            </ul>
+            {!priceIdsLoaded ? (
+              <div className="w-full p-5 text-center">
+                <Loader2 className="w-6 h-6 animate-spin text-primary mx-auto" />
+              </div>
+            ) : !hasLifetime ? (
+              <div className="bg-yellow-50 border border-yellow-200 rounded p-4 text-sm text-yellow-800">
+                <p className="font-semibold mb-1">Price ID not configured</p>
+                <p className="text-xs">Add NEXT_PUBLIC_STRIPE_PRICE_ID_LIFETIME to .env.local</p>
+                <p className="text-xs mt-1">Current value: {lifetimePriceId || 'NOT SET'}</p>
+              </div>
+            ) : (
+              <Button 
+                onClick={() => handleSubscribe(lifetimePriceId)}
+                disabled={loadingPriceId === lifetimePriceId || checkingStatus || !hasLifetime}
+                className="w-full"
+                size="lg"
+              >
+                {loadingPriceId === lifetimePriceId ? 'Loading...' : checkingStatus ? 'Processing...' : 'Buy Lifetime'}
               </Button>
             )}
           </div>

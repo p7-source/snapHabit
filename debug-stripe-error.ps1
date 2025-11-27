@@ -88,3 +88,4 @@ Write-Host "The 'Something went wrong' message is generic." -ForegroundColor Yel
 Write-Host "The real error will be in the browser console." -ForegroundColor Yellow
 
 
+

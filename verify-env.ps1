@@ -102,3 +102,4 @@ if ($hasMonthly -and $hasYearly -and $monthlyValue -notmatch 'price_xxxxx|price_
 }
 
 
+

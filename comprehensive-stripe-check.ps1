@@ -90,3 +90,4 @@ Write-Host "3. Does the pricing table show at all?" -ForegroundColor White
 Write-Host "4. When does the error appear? (on page load? when clicking button?)" -ForegroundColor White
 
 
+

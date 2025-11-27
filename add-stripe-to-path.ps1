@@ -15,3 +15,4 @@ Write-Host ""
 Write-Host "To verify, close and reopen terminal, then run: stripe --version"
 
 
+

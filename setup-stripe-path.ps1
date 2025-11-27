@@ -19,3 +19,4 @@ Write-Host "Current PATH includes:" -ForegroundColor Cyan
 $currentPath -split ';' | Where-Object { $_ -like "*stripe*" -or $_ -like "*snaphabit*" } | ForEach-Object { Write-Host "  $_" }
 
 
+
